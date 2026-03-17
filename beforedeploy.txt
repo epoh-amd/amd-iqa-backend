@@ -1,0 +1,30 @@
+modify the profile.js. uncomment the getlocationfrom OU
+   const userData = {
+          sAMAccountName: sAMAccountName,
+          email: mail || userPrincipalName,
+          employee_number: employeeID,
+          cost_center_number: departmentNumber,
+          department: department,
+          location:  "Penang",//getLocationFromOU(dn),
+          display_name: displayName,
+          first_name: givenName,
+          last_name: sn
+        };
+
+//for DB modify
+create new table project_name
+
+UPDATE builds
+SET project_name = CASE
+    WHEN project_name = 'Weisshorn SP8' THEN 1
+    WHEN project_name = 'Weisshorn SP7' THEN 2
+END
+WHERE project_name IN ('Weisshorn SP8', 'Weisshorn SP7');
+
+change data type for project name
+
+ALTER TABLE builds
+ADD CONSTRAINT fk_project
+FOREIGN KEY (project_name)
+REFERENCES project_name(id);
+

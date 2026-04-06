@@ -36,7 +36,7 @@ const sendCombinedDashboardEmail = async (html, attachments, recipients) => {
 
 
 
-cron.schedule('* * * * *', async () => {
+cron.schedule('0 23 * * *', async () => {
   console.log('Running combined dashboard cron...');
   try {
     const recipients = process.env.EMAIL_RECIPIENTS

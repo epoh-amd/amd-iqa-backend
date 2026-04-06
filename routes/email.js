@@ -3,9 +3,11 @@ const router = express.Router();
 const nodemailer = require('nodemailer');
 const cron = require('node-cron');
 const axios = require('axios'); // <-- for fetching backend data
-const { generatePieChartBase64, generateBarChartBase64, generateWeeklyChart, generateLocationAllocationChartBase64, generateLocationAllocationChartBase64NonStacked, generateBuildDeliveryChartBase64 } = require('../utils/generateCharts');
+const { generatePieChartBase64, generateBarChartBase64, generateWeeklyChart, generateLocationAllocationChartBase64, generateLocationAllocationChartBase64NonStacked, generateBuildDeliveryChartBase64, generateFactoryChartBase64 } = require('../utils/generateCharts');
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
+const apiUrl = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
 // Nodemailer setup
 const transporter = nodemailer.createTransport({
@@ -34,16 +36,15 @@ const sendCombinedDashboardEmail = async (html, attachments, recipients) => {
 
 
 
-cron.schedule('1 1 1 1 1', async () => {
+cron.schedule('* * * * *', async () => {
   console.log('Running combined dashboard cron...');
-
   try {
     const recipients = process.env.EMAIL_RECIPIENTS
       .split(',')
       .map(email => email.trim());
 
     const { data: projects } = await axios.get(
-      'http://localhost:5000/api/dashboard/projects'
+      `${apiUrl}/dashboard/projects`
     );
 
     let emailHtml = ` <h1>Weekly Dashboard Report</h1>
@@ -56,9 +57,20 @@ cron.schedule('1 1 1 1 1', async () => {
     const startDate = `${year}-01-01`;
     const endDate = `${year}-12-31`;
 
+    const excludedProjects = new Set([
+      'Venice SP7',
+      'Gorgon Halo',
+      'Gorgon Point 1',
+      'Gorgon Point 2',
+      'Gorgon_HALO',
+      'MI-450',
+      'Mi350P',
+      'Verano LPDDR'
+    ]);
+
     for (const project of projects) {
       //skip it
-      if (project === 'Venice SP7') continue;
+      if (excludedProjects.has(project)) continue;
       emailHtml += `<hr/><h2>Project: ${project}</h2>`;
       const cidPrefix = project.replace(/\s+/g, '_');
 
@@ -69,7 +81,7 @@ cron.schedule('1 1 1 1 1', async () => {
       */
       try {
         const { data: qualityData } = await axios.get(
-          `http://localhost:5000/api/dashboard/quality-data/${encodeURIComponent(project)}`
+          `${apiUrl}/dashboard/quality-data/${encodeURIComponent(project)}`
         );
 
         const prbPie = await generatePieChartBase64(qualityData, 'PRB');
@@ -121,7 +133,7 @@ cron.schedule('1 1 1 1 1', async () => {
             <!-- <h4>PRB Breakdown</h4> -->
             ${prbBar
               ? `<p>
-                    <a href="http://localhost:5000/api/dashboard/chart/${encodeURIComponent(project)}/PRB/bar" target="_blank">
+                   <a href="${apiUrl}/dashboard/chart/${encodeURIComponent(project)}/PRB/bar" target="_blank">
                       Click to view PRB Incoming Quality Issue Breakdown
                     </a>
                   </p>`
@@ -138,7 +150,7 @@ cron.schedule('1 1 1 1 1', async () => {
             <!-- <h4>VRB Breakdown</h4> -->
             ${vrbBar
               ? `<p>
-                    <a href="http://localhost:5000/api/dashboard/chart/${encodeURIComponent(project)}/VRB/bar" target="_blank">
+                    <a href="${apiUrl}/dashboard/chart/${encodeURIComponent(project)}/VRB/bar" target="_blank">
                       Click to view VRB Incoming Quality Issue Breakdown
                     </a>
                   </p>`
@@ -162,29 +174,50 @@ cron.schedule('1 1 1 1 1', async () => {
       */
       try {
         const { data: buildData } = await axios.get(
-          `http://localhost:5000/api/dashboard/build-data-summary/${project}`
+         `${apiUrl}/dashboard/build-data-summary/${project}`
         );
 
         emailHtml += `<h3>🚀 Weekly Build Delivery</h3>`;
 
         for (const platform of ['PRB', 'VRB']) {
-          const base64 = await generateBuildDeliveryChartBase64(buildData, platform);
-          const cid = `${cidPrefix}_${platform}_Build`;
-
-          if (base64) {
+          const weeklyChart = await generateBuildDeliveryChartBase64(buildData, platform);
+          const factoryChart = await generateFactoryChartBase64(buildData, platform);
+        
+          if (!weeklyChart && !factoryChart) {
+            emailHtml += `<p style="color:brown;">No data meaning no ${platform} systems sent to smart hand.</p>`;
+            continue;
+          }
+        
+          emailHtml += `<h4>${platform}</h4>`;
+        
+          // ✅ Weekly Chart
+          if (weeklyChart) {
+            const cid1 = `${cidPrefix}_${platform}_weekly`;
             attachments.push({
-              filename: `${cid}.png`,
-              content: Buffer.from(base64, 'base64'),
-              cid,
+              filename: `${cid1}.png`,
+              content: Buffer.from(weeklyChart, 'base64'),
+              cid: cid1,
             });
-
+        
             emailHtml += `
-              <h4>${platform}</h4>
-              <img src="cid:${cid}" style="width:100%;max-width:800px;" />
+              <p><b>Weekly vs Accumulative</b></p>
+              <img src="cid:${cid1}" style="width:100%;max-width:800px;" />
             `;
-          } else {
-            emailHtml += `<p style="color:brown;">Note: No data meaning no ${platform} systems sent to Smart Hand.</p>`;
-
+          }
+        
+          // ✅ Factory Chart
+          if (factoryChart) {
+            const cid2 = `${cidPrefix}_${platform}_factory`;
+            attachments.push({
+              filename: `${cid2}.png`,
+              content: Buffer.from(factoryChart, 'base64'),
+              cid: cid2,
+            });
+        
+            emailHtml += `
+              <p><b>Factory (SH vs Non-SH + Accum)</b></p>
+              <img src="cid:${cid2}" style="width:100%;max-width:800px;" />
+            `;
           }
         }
 
@@ -200,7 +233,7 @@ cron.schedule('1 1 1 1 1', async () => {
  try {
   // Original data (no subcategory filter)
   const { data: originalData } = await axios.get(
-    'http://localhost:5000/api/dashboard/location-allocation',
+    `${apiUrl}/dashboard/location-allocation`,
     { params: { projectName: project, startDate, endDate } }
   );
 
@@ -252,7 +285,7 @@ cron.schedule('1 1 1 1 1', async () => {
         `;
 
         // Add link to stacked chart below the embedded chart
-        let stackedUrl = `http://localhost:5000/api/dashboard/location-allocation/chart?projectName=${encodeURIComponent(project)}&platform=${platform}&startDate=${startDate}&endDate=${endDate}`;
+        let stackedUrl = `${apiUrl}/dashboard/location-allocation/chart?projectName=${encodeURIComponent(project)}&platform=${platform}&startDate=${startDate}&endDate=${endDate}`;
         emailHtml += `
           <p>
             <a href="${stackedUrl}" target="_blank">
@@ -280,7 +313,7 @@ cron.schedule('1 1 1 1 1', async () => {
 
       // Fetch filtered data to check if chart exists
       const { data: filteredData } = await axios.get(
-        'http://localhost:5000/api/dashboard/location-allocation',
+        `${apiUrl}/dashboard/location-allocation`,
         {
           params: {
             projectName: project,
@@ -295,7 +328,7 @@ cron.schedule('1 1 1 1 1', async () => {
 
       if (base64Filtered) {
         // Chart exists → show link
-        let url = `http://localhost:5000/api/dashboard/location-allocation/nonstacked-chart?projectName=${encodeURIComponent(project)}&platform=${platform}&startDate=${startDate}&endDate=${endDate}`;
+        let url = `${apiUrl}/dashboard/location-allocation/nonstacked-chart?projectName=${encodeURIComponent(project)}&platform=${platform}&startDate=${startDate}&endDate=${endDate}`;
         if (platform === 'PRB') url += `&prbSubcategories=${encodeURIComponent(subcat)}`;
         else url += `&vrbSubcategories=${encodeURIComponent(subcat)}`;
 
@@ -325,49 +358,10 @@ cron.schedule('1 1 1 1 1', async () => {
   } catch (err) {
     console.error('Combined dashboard cron failed:', err);
   }
+}, {
+  timezone: 'Asia/Kuala_Lumpur'
 });
 
-
-/**
- * Send quality report email
- */
-const sendQualityEmail = async (html, attachments, recipients) => {
-  await transporter.sendMail({
-    from: 'noreply@amd.com',
-    to: recipients.join(','),
-    subject: `Weekly Quality Report`,
-    html,
-    attachments,
-  });
-
-  console.log('Combined quality email sent successfully');
-};
-
-
-const sendLocationAllocationEmail = async (html, attachments, recipients) => {
-  await transporter.sendMail({
-    from: 'noreply@amd.com',
-    to: recipients.join(','),
-    subject: `Yearly Location Allocation Report`,
-    html,
-    attachments,
-  });
-
-  console.log('Location Allocation email sent successfully');
-};
-
-
-const sendweeklyEmail = async (html, attachments, recipients) => {
-  await transporter.sendMail({
-    from: 'noreply@amd.com',
-    to: recipients.join(','),
-    subject: `Weekly Built Delivery Summary`,
-    html,
-    attachments,
-  });
-
-  console.log('Weekly dashboard email sent successfully');
-};
 
 /*
 

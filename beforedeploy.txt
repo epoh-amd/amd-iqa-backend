@@ -28,3 +28,10 @@ ADD CONSTRAINT fk_project
 FOREIGN KEY (project_name)
 REFERENCES project_name(id);
 
+add po collumn in db
+
+modify project_name in project_forecast_configs to int, then
+ALTER TABLE iqadb01.project_forecast_configs ADD CONSTRAINT fk_project2 FOREIGN KEY (project_name) REFERENCES project_name(id);
+then ALTER TABLE project_por_targets
+ADD COLUMN smart_quantity INT DEFAULT 0,
+ADD COLUMN non_smart_quantity INT DEFAULT 0;

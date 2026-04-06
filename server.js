@@ -1065,27 +1065,35 @@ app.get('/api/dashboard/build-data-summary/:projectName', (req, res) => {
   // Step 1: Get all builds for the project
   const buildQuery = `
     SELECT
-      b.chassis_sn,   
-      b.platform_type,
-      b.system_pn,
-      b.project_name,
-      DATE(mb.delivery_date) as build_date,
-      YEARWEEK(mb.delivery_date, 1) as year_week,
-      WEEK(mb.delivery_date, 1) as week_number,
-      YEAR(mb.delivery_date) as year,
-      mb.delivery_date as created_at,
-      mb.master_status,
-      CASE
-        WHEN UPPER(b.platform_type) LIKE '%PRB%' THEN 'PRB'
-        WHEN UPPER(b.platform_type) LIKE '%VRB%' THEN 'VRB'
-        ELSE 'Other'
-      END as detected_platform
-    FROM builds b
-    INNER JOIN master_builds mb ON b.chassis_sn = mb.chassis_sn
-    WHERE b.project_name = ?
-      AND mb.delivery_date IS NOT NULL
-      AND (UPPER(b.platform_type) LIKE '%PRB%' OR UPPER(b.platform_type) LIKE '%VRB%')
-    ORDER BY mb.delivery_date ASC
+  b.chassis_sn,   
+  b.platform_type,
+  b.system_pn,
+  b.project_name,
+  DATE(mb.delivery_date) as build_date,
+  YEARWEEK(mb.delivery_date, 1) as year_week,
+  WEEK(mb.delivery_date, 1) as week_number,
+  YEAR(mb.delivery_date) as year,
+  mb.delivery_date as created_at,
+  mb.master_status,
+  CASE
+    WHEN UPPER(b.platform_type) LIKE '%PRB%' THEN 'PRB'
+    WHEN UPPER(b.platform_type) LIKE '%VRB%' THEN 'VRB'
+    ELSE 'Other'
+  END as detected_platform
+FROM builds b
+INNER JOIN master_builds mb 
+  ON b.chassis_sn = mb.chassis_sn
+WHERE b.project_name = (
+    SELECT id 
+    FROM project_name 
+    WHERE project_name = ?
+)
+AND mb.delivery_date IS NOT NULL
+AND (
+  UPPER(b.platform_type) LIKE '%PRB%' 
+  OR UPPER(b.platform_type) LIKE '%VRB%'
+)
+ORDER BY mb.delivery_date ASC;
   `;
 
   db.query(buildQuery, [projectName], (err, buildResults) => {
@@ -1129,8 +1137,14 @@ app.get('/api/dashboard/build-data-summary/:projectName', (req, res) => {
     // Step 2: Get POR targets from forecast config
     const getPorTargets = (platform, callback) => {
       const configQuery = `
-        SELECT * FROM project_forecast_configs
-        WHERE project_name = ? AND platform_type = ?
+       SELECT * 
+FROM project_forecast_configs
+WHERE project_name = (
+    SELECT id 
+    FROM project_name 
+    WHERE project_name = ?
+)
+AND platform_type = ?
       `;
 
       db.query(configQuery, [projectName, platform], (err, configResults) => {
@@ -1140,7 +1154,11 @@ app.get('/api/dashboard/build-data-summary/:projectName', (req, res) => {
         const config = configResults[0];
 
         const porQuery = `
-          SELECT week_date, por_quantity FROM project_por_targets
+          SELECT 
+          week_date, 
+          smart_quantity, 
+          non_smart_quantity 
+        FROM project_por_targets
           WHERE config_id = ?
           ORDER BY week_date
         `;
@@ -1148,17 +1166,20 @@ app.get('/api/dashboard/build-data-summary/:projectName', (req, res) => {
         db.query(porQuery, [config.id], (err, porResults) => {
           if (err) return callback(err);
 
-          const porQuantities = [];
           const porWeeks = [];
+          const smartQty = [];
+          const nonSmartQty = [];
 
           porResults.forEach(row => {
             const dateKey = new Date(row.week_date);
             const weekStr = `${(dateKey.getMonth() + 1).toString().padStart(2, '0')}/${dateKey.getDate().toString().padStart(2, '0')}`;
+
             porWeeks.push(weekStr);
-            porQuantities.push(row.por_quantity);
+            smartQty.push(row.smart_quantity || 0);
+            nonSmartQty.push(row.non_smart_quantity || 0);
           });
 
-          callback(null, { porWeeks, porQuantities });
+          callback(null, { porWeeks, smartQty, nonSmartQty });
         });
       });
     };
@@ -1196,12 +1217,16 @@ app.get('/api/dashboard/build-data-summary/:projectName', (req, res) => {
     getPorTargets('PRB', (err, prbPor) => {
       if (err) return res.status(500).json({ error: 'Failed to fetch PRB POR', details: err.message });
       data2.prb.porWeeks = prbPor.porWeeks;
-      data2.prb.porQuantities = prbPor.porQuantities;
+      data2.prb.smartQty = prbPor.smartQty;
+      data2.prb.nonSmartQty = prbPor.nonSmartQty;
 
       getPorTargets('VRB', (err, vrbPor) => {
         if (err) return res.status(500).json({ error: 'Failed to fetch VRB POR', details: err.message });
         data2.vrb.porWeeks = vrbPor.porWeeks;
         data2.vrb.porQuantities = vrbPor.porQuantities;
+        data2.vrb.smartQty = vrbPor.smartQty;
+        data2.vrb.nonSmartQty = vrbPor.nonSmartQty;
+
 
         res.json(data2);
       });
@@ -1223,10 +1248,12 @@ app.get('/api/dashboard/build-data-summary/:projectName', (req, res) => {
 app.get('/api/dashboard/forecast-config/:projectName/:platformType', (req, res) => {
   const { projectName, platformType } = req.params;
 
-
   const configQuery = `
-    SELECT * FROM project_forecast_configs 
-    WHERE project_name = ? AND platform_type = ?
+     SELECT pfc.*
+  FROM project_forecast_configs pfc
+  JOIN project_name pn ON pfc.project_name = pn.id
+  WHERE pn.project_name = ? 
+    AND pfc.platform_type = ?
   `;
 
   db.query(configQuery, [projectName, platformType], (err, configResults) => {
@@ -1332,6 +1359,9 @@ app.post('/api/dashboard/forecast-config/:projectName/:platformType', async (req
     startDate: configData.startDate,
     endDate: configData.endDate,
     milestoneCount: configData.milestones?.length || 0,
+    //porTargetCount: configData.porTargets?.length || 0
+    smartTargetCount: configData.smartTargets?.length || 0,
+    nonSmartTargetCount: configData.nonSmartTargets?.length || 0,
     porTargetCount: configData.porTargets?.length || 0
   });
 
@@ -1358,6 +1388,8 @@ app.post('/api/dashboard/forecast-config/:projectName/:platformType', async (req
       iodDate,
       uuDate,
       milestones,
+      smartTargets,
+      nonSmartTargets,
       porTargets
     } = configData;
 
@@ -1366,19 +1398,22 @@ app.post('/api/dashboard/forecast-config/:projectName/:platformType', async (req
 
     // Insert or update main configuration
     const [configResult] = await connection.execute(`
-      INSERT INTO project_forecast_configs (
-        project_name, platform_type, start_date, end_date, 
-        afe_date, tv_date, iod_date, uu_date
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON DUPLICATE KEY UPDATE
-        start_date = VALUES(start_date),
-        end_date = VALUES(end_date),
-        afe_date = VALUES(afe_date),
-        tv_date = VALUES(tv_date),
-        iod_date = VALUES(iod_date),
-        uu_date = VALUES(uu_date),
-        updated_at = CURRENT_TIMESTAMP
+       INSERT INTO project_forecast_configs (
+    project_name, platform_type, start_date, end_date,
+    afe_date, tv_date, iod_date, uu_date
+  )
+  VALUES (
+    (SELECT id FROM project_name WHERE project_name = ?),
+    ?, ?, ?, ?, ?, ?, ?
+  )
+  ON DUPLICATE KEY UPDATE
+    start_date = VALUES(start_date),
+    end_date = VALUES(end_date),
+    afe_date = VALUES(afe_date),
+    tv_date = VALUES(tv_date),
+    iod_date = VALUES(iod_date),
+    uu_date = VALUES(uu_date),
+    updated_at = CURRENT_TIMESTAMP
     `, [
       projectName,
       platformType,
@@ -1395,10 +1430,19 @@ app.post('/api/dashboard/forecast-config/:projectName/:platformType', async (req
     if (configResult.insertId) {
       configId = configResult.insertId;
     } else {
-      const [existingConfig] = await connection.execute(
-        'SELECT id FROM project_forecast_configs WHERE project_name = ? AND platform_type = ?',
-        [projectName, platformType]
-      );
+      const [existingConfig] = await connection.execute(`
+        SELECT id 
+        FROM project_forecast_configs 
+        WHERE project_id = (
+          SELECT id 
+          FROM project_name 
+          WHERE project_name = ?
+        )
+        AND platform_type = ?
+      `, [
+        projectName,
+        platformType
+      ]);
       configId = existingConfig[0].id;
     }
 
@@ -1406,7 +1450,7 @@ app.post('/api/dashboard/forecast-config/:projectName/:platformType', async (req
 
     // Delete existing milestones and POR targets
     await connection.execute('DELETE FROM project_milestones WHERE config_id = ?', [configId]);
-    await connection.execute('DELETE FROM project_por_targets WHERE config_id = ?', [configId]);
+    //await connection.execute('DELETE FROM project_por_targets WHERE config_id = ?', [configId]);
 
     // Insert new milestones (matching frontend structure exactly)
     if (milestones && milestones.length > 0) {
@@ -1429,26 +1473,50 @@ app.post('/api/dashboard/forecast-config/:projectName/:platformType', async (req
       }
     }
 
-    // Insert weekly POR targets using utility function
-    if (porTargets && porTargets.length > 0) {
-      const porTargetsByWeek = convertPorTargetsToWeeklyObject(porTargets, startDate, endDate);
+    // 🔥 NEW: SAFE ARRAY ALIGNMENT
+    const safeSmart = smartTargets || [];
+    const safeNonSmart = nonSmartTargets || [];
+    const safePOR = porTargets || [];
 
-      console.log('Converting POR targets:', {
-        arrayLength: porTargets.length,
-        objectKeys: Object.keys(porTargetsByWeek).length
+
+    // Insert weekly POR targets using utility function
+    if (safePOR.length > 0) {
+      const porTargetsByWeek = convertPorTargetsToWeeklyObject(safeSmart,
+        safeNonSmart,
+        safePOR,
+        startDate,
+        endDate);
+
+      //console.log('Converting POR targets:', {
+      //  arrayLength: porTargets.length,
+      //  objectKeys: Object.keys(porTargetsByWeek).length
+      //});
+
+      console.log('Saving weekly targets:', {
+        smart: safeSmart.length,
+        nonSmart: safeNonSmart.length,
+        por: safePOR.length
       });
 
-      for (const [weekDate, quantity] of Object.entries(porTargetsByWeek)) {
-        const qty = parseInt(quantity) || 0;
+      for (const [weekDate, data] of Object.entries(porTargetsByWeek)) {
+        //const qty = parseInt(porTargetsByWeek[weekDate]) || 0;
 
         // Save all values, including zeros, to preserve user input
-        console.log(`Inserting POR target for ${weekDate}: ${qty}`);
+        console.log(`Inserting POR target for ${weekDate}: ${data}`);
 
         try {
           await connection.execute(`
-            INSERT INTO project_por_targets (config_id, week_date, por_quantity)
-            VALUES (?, ?, ?)
-          `, [configId, weekDate, qty]);
+            INSERT INTO project_por_targets (
+            config_id,
+            week_date,
+            por_quantity,
+            smart_quantity,
+            non_smart_quantity
+          )
+          VALUES (?, ?, ?, ?, ?)
+          `, [configId, weekDate, data.por,
+            data.smart,
+            data.nonSmart]);
         } catch (insertError) {
           console.error(`Error inserting POR target for ${weekDate}:`, insertError);
           // Continue with other targets
@@ -1736,8 +1804,7 @@ app.get('/api/dashboard/quality-data/:projectName', (req, res) => {
 
       // Defect colors
       const defectColors = [
-        '#f97316', '#8b5cf6', '#ec4899', '#6366f1',
-        '#f59e0b', '#7c3aed', '#a855f7', '#be185d',
+        '#f97316', '#8b5cf6', '#ffff00', '#6366f1', '#ec4899', '#7c3aed', '#a855f7', '#be185d',
         '#b45309', '#7c2d12', '#92400e', '#78350f',
         '#581c87', '#a21caf', '#9333ea'
       ];
@@ -1766,7 +1833,9 @@ app.get('/api/dashboard/quality-data/:projectName', (req, res) => {
         const pieData = [
           {
             name: 'Good',
-            value: totalBuilds > 0 ? Math.round((goodBuilds / totalBuilds) * 100) : 0,
+            value: totalBuilds > 0
+              ? Number(((goodBuilds / totalBuilds) * 100).toFixed(1))
+              : 0,
             count: goodBuilds,
             color: '#10b981'
           }
@@ -2000,19 +2069,76 @@ app.get('/api/builds/in-progress', (req, res) => {
   console.log('Fetching in-progress builds...');
 
   const query = `
-    SELECT b.*,
-           GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') as dimm_sns,
-           CASE 
-             WHEN b.fpy_status IS NOT NULL THEN 1 ELSE 0 
-           END as has_quality_data,
-           CASE 
-             WHEN b.bios_version IS NOT NULL THEN 1 ELSE 0 
-           END as has_bkc_data
-    FROM builds b
-    LEFT JOIN dimm_serial_numbers d ON b.chassis_sn = d.chassis_sn
-    WHERE b.status = 'In Progress'
-    GROUP BY b.chassis_sn
-    ORDER BY b.updated_at DESC
+SELECT 
+    b.chassis_sn,
+    b.jira_ticket_no,
+    b.location,
+    b.build_engineer,
+    b.is_custom_config,
+    b.system_pn,
+    b.platform_type,
+    b.manufacturer,
+    b.chassis_type,
+    b.bmc_name,
+    b.mb_sn,
+    b.ethernet_mac,
+    b.cpu_socket,
+    b.cpu_vendor,
+    b.cpu_p0_sn,
+    b.cpu_p0_socket_date_code,
+    b.cpu_p1_sn,
+    b.cpu_p1_socket_date_code,
+    b.cpu_program_name,
+    b.m2_pn,
+    b.m2_sn,
+    b.dimm_pn,
+    b.dimm_qty,
+    b.visual_inspection_status,
+    b.visual_inspection_notes,
+    b.boot_status,
+    b.boot_notes,
+    b.dimms_detected_status,
+    b.dimms_detected_notes,
+    b.lom_working_status,
+    b.lom_working_notes,
+    b.fpy_status,
+    b.can_continue,
+    b.status,
+    b.created_at,
+    b.updated_at,
+    b.bios_version,
+    b.bmc_version,
+    b.scm_fpga_version,
+    b.hpm_fpga_version,
+    b.problem_description,
+    b.bmc_mac,
+    b.po,
+
+    pn.project_name AS project_name,   -- readable name
+
+    GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') AS dimm_sns,
+
+    CASE 
+        WHEN b.fpy_status IS NOT NULL THEN 1 ELSE 0 
+    END AS has_quality_data,
+
+    CASE 
+        WHEN b.bios_version IS NOT NULL THEN 1 ELSE 0 
+    END AS has_bkc_data
+
+FROM builds b
+
+LEFT JOIN project_name pn 
+    ON b.project_name = pn.id
+
+LEFT JOIN dimm_serial_numbers d 
+    ON b.chassis_sn = d.chassis_sn
+
+WHERE b.status = 'In Progress'
+
+GROUP BY b.chassis_sn
+
+ORDER BY b.updated_at DESC;
   `;
 
   dbQuery(query, (err, results) => {
@@ -2290,12 +2416,65 @@ app.get('/api/builds/:chassisSN/complete', (req, res) => {
 
   // Get complete build details including quality data
   const buildQuery = `
-    SELECT b.*, 
-           GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') as dimm_sns
-    FROM builds b
-    LEFT JOIN dimm_serial_numbers d ON b.chassis_sn = d.chassis_sn
-    WHERE b.chassis_sn = ?
-    GROUP BY b.chassis_sn
+   SELECT 
+    b.chassis_sn,
+    b.jira_ticket_no,
+    b.location,
+    b.build_engineer,
+    b.is_custom_config,
+    pn.project_name AS project_name,
+    b.system_pn,
+    b.platform_type,
+    b.manufacturer,
+    b.chassis_type,
+    b.bmc_name,
+    b.mb_sn,
+    b.ethernet_mac,
+    b.cpu_socket,
+    b.cpu_vendor,
+    b.cpu_p0_sn,
+    b.cpu_p0_socket_date_code,
+    b.cpu_p1_sn,
+    b.cpu_p1_socket_date_code,
+    b.cpu_program_name,
+    b.m2_pn,
+    b.m2_sn,
+    b.dimm_pn,
+    b.dimm_qty,
+    b.visual_inspection_status,
+    b.visual_inspection_notes,
+    b.boot_status,
+    b.boot_notes,
+    b.dimms_detected_status,
+    b.dimms_detected_notes,
+    b.lom_working_status,
+    b.lom_working_notes,
+    b.fpy_status,
+    b.can_continue,
+    b.status,
+    b.created_at,
+    b.updated_at,
+    b.bios_version,
+    b.bmc_version,
+    b.scm_fpga_version,
+    b.hpm_fpga_version,
+    b.problem_description,
+    b.bmc_mac,
+    b.po,
+
+    GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') AS dimm_sns
+
+FROM builds b
+
+LEFT JOIN project_name pn 
+    ON b.project_name = pn.id
+
+LEFT JOIN dimm_serial_numbers d 
+    ON b.chassis_sn = d.chassis_sn
+
+WHERE b.chassis_sn = ?
+
+GROUP BY b.chassis_sn;
   `;
 
   db.query(buildQuery, [chassisSN], (err, buildResults) => {
@@ -2410,13 +2589,66 @@ app.post('/api/builds/search-for-edit', (req, res) => {
   const whereClause = whereClauses.join(' OR ');
 
   const query = `
-    SELECT b.*,
-           GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') as dimm_sns
-    FROM builds b
-    LEFT JOIN dimm_serial_numbers d ON b.chassis_sn = d.chassis_sn
-    WHERE ${whereClause}
-    GROUP BY b.chassis_sn
-    ORDER BY b.updated_at DESC
+    SELECT 
+    b.chassis_sn,
+    b.jira_ticket_no,
+    b.location,
+    b.build_engineer,
+    b.is_custom_config,
+    pn.project_name AS project_name,
+    b.system_pn,
+    b.platform_type,
+    b.manufacturer,
+    b.chassis_type,
+    b.bmc_name,
+    b.mb_sn,
+    b.ethernet_mac,
+    b.cpu_socket,
+    b.cpu_vendor,
+    b.cpu_p0_sn,
+    b.cpu_p0_socket_date_code,
+    b.cpu_p1_sn,
+    b.cpu_p1_socket_date_code,
+    b.cpu_program_name,
+    b.m2_pn,
+    b.m2_sn,
+    b.dimm_pn,
+    b.dimm_qty,
+    b.visual_inspection_status,
+    b.visual_inspection_notes,
+    b.boot_status,
+    b.boot_notes,
+    b.dimms_detected_status,
+    b.dimms_detected_notes,
+    b.lom_working_status,
+    b.lom_working_notes,
+    b.fpy_status,
+    b.can_continue,
+    b.status,
+    b.created_at,
+    b.updated_at,
+    b.bios_version,
+    b.bmc_version,
+    b.scm_fpga_version,
+    b.hpm_fpga_version,
+    b.problem_description,
+    b.bmc_mac,
+
+    GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') AS dimm_sns
+
+FROM builds b
+
+LEFT JOIN project_name pn 
+    ON b.project_name = pn.id
+
+LEFT JOIN dimm_serial_numbers d 
+    ON b.chassis_sn = d.chassis_sn
+
+WHERE ${whereClause}
+
+GROUP BY b.chassis_sn
+
+ORDER BY b.updated_at DESC;
   `;
 
   dbQuery(query, queryParams, (err, results) => {
@@ -2467,13 +2699,31 @@ app.put('/api/builds/:chassisSN/edit', async (req, res) => {
 
     // Chassis Information (editable)
     if (updateData.projectName !== undefined) {
+      // Get project ID from projects table
+      const [rows] = await connection.execute(
+        'SELECT id FROM project_name WHERE project_name = ? LIMIT 1',
+        [updateData.projectName]
+      );
+
+      if (rows.length === 0) {
+        throw new Error(`Project not found: ${updateData.projectName}`);
+      }
+
+      const projectId = rows[0].id;
+
       buildUpdateFields.push('project_name = ?');
-      buildUpdateValues.push(updateData.projectName);
+      buildUpdateValues.push(projectId);
     }
     if (updateData.jiraTicketNo !== undefined) {
       buildUpdateFields.push('jira_ticket_no = ?');
       buildUpdateValues.push(updateData.jiraTicketNo);
     }
+
+    if (updateData.po !== undefined) {
+      buildUpdateFields.push('po = ?');
+      buildUpdateValues.push(updateData.po);
+    }
+
     if (updateData.bmcMac !== undefined) {
       buildUpdateFields.push('bmc_mac = ?');
       buildUpdateValues.push(updateData.bmcMac);
@@ -2684,6 +2934,7 @@ app.put('/api/builds/:chassisSN/edit', async (req, res) => {
     // Commit transaction
     await connection.commit();
 
+    console.log('Incoming updateData:', updateData);
     console.log('Build edited successfully:', chassisSN);
     res.json({
       success: true,
@@ -3244,18 +3495,20 @@ app.post('/api/builds', async (req, res) => {
 
     const projectId = projectRows[0].id;
 
+    console.log("po:", systemInfo.po);
+
     // FIXED: Insert main build record with correct number of values
     const buildQuery = `
       INSERT INTO builds (
         chassis_sn, location, build_engineer, is_custom_config, project_name, system_pn, 
         platform_type, manufacturer, chassis_type, bmc_name, bmc_mac, mb_sn, 
-        ethernet_mac, cpu_socket, cpu_vendor, jira_ticket_no, cpu_program_name, 
+        ethernet_mac, cpu_socket, cpu_vendor, jira_ticket_no, po, cpu_program_name, 
         cpu_p0_sn, cpu_p0_socket_date_code, cpu_p1_sn, cpu_p1_socket_date_code, m2_pn, m2_sn, dimm_pn, dimm_qty, 
         visual_inspection_status, visual_inspection_notes, boot_status, boot_notes, 
         dimms_detected_status, dimms_detected_notes, lom_working_status, lom_working_notes, 
         fpy_status, problem_description, can_continue, status, bios_version, 
         scm_fpga_version, hpm_fpga_version, bmc_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         location = VALUES(location),
         build_engineer = VALUES(build_engineer),
@@ -3272,6 +3525,7 @@ app.post('/api/builds', async (req, res) => {
         cpu_socket = VALUES(cpu_socket),
         cpu_vendor = VALUES(cpu_vendor),
         jira_ticket_no = VALUES(jira_ticket_no),
+        po = VALUES(po),
         cpu_p0_sn = VALUES(cpu_p0_sn),
         cpu_p0_socket_date_code = VALUES(cpu_p0_socket_date_code),
         cpu_p1_sn = VALUES(cpu_p1_sn),
@@ -3311,13 +3565,14 @@ app.post('/api/builds', async (req, res) => {
       systemInfo.platformType,                       // 7. platform_type
       systemInfo.manufacturer,                       // 8. manufacturer
       systemInfo.chassisType,                        // 9. chassis_type
-      systemInfo.bmcName,                            // 10. bmc_name
+      systemInfo.bmcName,                             // 10. bmc_name
       systemInfo.bmcMac,                             // 11. bmc_mac
       systemInfo.mbSN,                               // 12. mb_sn
       systemInfo.ethernetMac || null,                // 13. ethernet_mac
       systemInfo.cpuSocket,                          // 14. cpu_socket
       systemInfo.cpuVendor || null,                  // 15. cpu_vendor
       systemInfo.jiraTicketNo || null,               // 16. jira_ticket_no
+      systemInfo.po || null,
       systemInfo.cpuProgramName,                     // 17. cpu_program_name
       systemInfo.cpuP0SN || null,                    // 18. cpu_p0_sn
       systemInfo.cpuP0SocketDateCode || null,        // 19. cpu_p0_socket_date_code
@@ -3356,6 +3611,7 @@ app.post('/api/builds', async (req, res) => {
     }
 
     console.log(`Build successfully inserted with ${buildResult.affectedRows} affected rows`);
+
 
     // Handle DIMM serial numbers
     if (systemInfo.dimmSNs && systemInfo.dimmSNs.length > 0) {
@@ -4371,7 +4627,7 @@ GROUP BY b.chassis_sn
 ORDER BY b.created_at DESC
   `;
 */
-const query = `
+  const query = `
 SELECT 
   -- Build columns explicitly listed
   b.chassis_sn,
@@ -4879,7 +5135,7 @@ app.post('/api/search-builds', (req, res) => {
     query += ' AND pn.project_name LIKE ?';
     params.push(`%${filters.projectName}%`);
   }
- 
+
   // System P/N filter - Handle both array (multi-select) and string (backward compatibility)
   if (filters.systemPN) {
     if (Array.isArray(filters.systemPN) && filters.systemPN.length > 0) {
@@ -6451,4 +6707,4 @@ app.get('/api/dashboard/location-allocation/nonstacked-chart', async (req, res) 
     res.status(500).send('Failed to generate non-stacked chart');
   }
 });
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+//app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

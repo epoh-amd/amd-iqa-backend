@@ -208,7 +208,8 @@ const setupOktaAuth = () => {
       'Amanda.KoayBeeWah@amd.com',
       'tzesngee@amd.com',
       'TzeShik.Ngee@amd.com',
-      'ErnQi.Poh@amd.com'
+      'ErnQi.Poh@amd.com',
+      'epoh@amd.com'
     ];
     
     const allAdminEmails = [...adminEmailsFromEnv, ...hardcodedAdminEmails.map(email => email.toLowerCase())];

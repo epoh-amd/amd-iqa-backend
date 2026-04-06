@@ -151,6 +151,7 @@ const validateConfiguration = (configData) => {
  * @param {string} endDate - Project end date
  * @returns {Object} - Object with week dates as keys and quantities as values
  */
+/*
 const convertPorTargetsToWeeklyObject = (porTargets, startDate, endDate) => {
   if (!porTargets || !startDate || !endDate) return {};
   
@@ -164,6 +165,34 @@ const convertPorTargetsToWeeklyObject = (porTargets, startDate, endDate) => {
   });
   
   return porTargetsByWeek;
+};
+*/
+const convertPorTargetsToWeeklyObject = (
+  smartTargets,
+  nonSmartTargets,
+  porTargets,
+  startDate,
+  endDate
+) => {
+  if (!startDate || !endDate) return {};
+
+  const weeks = generateWeeklyDates(startDate, endDate);
+
+  const result = {};
+
+  weeks.forEach((week, index) => {
+    const smart = parseInt(smartTargets?.[index]) || 0;
+    const nonSmart = parseInt(nonSmartTargets?.[index]) || 0;
+    const total = parseInt(porTargets?.[index]) || (smart + nonSmart);
+
+    result[week.date] = {
+      smart,
+      nonSmart,
+      por: total
+    };
+  });
+
+  return result;
 };
 
 /**

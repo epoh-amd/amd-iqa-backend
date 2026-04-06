@@ -62,7 +62,7 @@ const generatePieChartBase64 = async (qualityData, type) => {
             font: {
               size: 14,
             },
-             color: '#000'
+            color: '#000'
           },
         },
 
@@ -162,6 +162,12 @@ const generateBarChartBase64 = async (qualityData, type) => {
             beginAtZero: true,
             fontColor: '#000000',      // black y-axis labels
             font: { size: 12, weight: '600' },
+
+            // ✅ FORCE INTEGER STEPS
+            precision: 0,
+            callback: function (value) {
+              return Number.isInteger(value) ? value : null;
+            }
           }
         }],
         xAxes: [{

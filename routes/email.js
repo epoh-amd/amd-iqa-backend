@@ -7,7 +7,7 @@ const { generatePieChartBase64, generateBarChartBase64, generateWeeklyChart, gen
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
-const apiUrl = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const apiUrl = process.env.API_URL || 'http://localhost:5000/api';
 
 // Nodemailer setup
 const transporter = nodemailer.createTransport({

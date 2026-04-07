@@ -3,7 +3,7 @@ const router = express.Router();
 const nodemailer = require('nodemailer');
 const cron = require('node-cron');
 const axios = require('axios'); // <-- for fetching backend data
-const { generatePieChartBase64, generateBarChartBase64, generateWeeklyChart, generateLocationAllocationChartBase64, generateLocationAllocationChartBase64NonStacked, generateBuildDeliveryChartBase64, generateFactoryChartBase64 } = require('../utils/generateCharts');
+const { generatePieChartBase64, generateBarChartBase64, generateWeeklyChart, generateLocationAllocationChartBase64, generateLocationAllocationChartBase64NonStacked, generateBuildDeliveryChartBase64, generateFactoryChartBase64, generateBuildDeliveryChartBase641 } = require('../utils/generateCharts');
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
@@ -36,7 +36,7 @@ const sendCombinedDashboardEmail = async (html, attachments, recipients) => {
 
 
 
-cron.schedule('30 8 * * *', async () => {
+cron.schedule('30 12 * * *', async () => {
   console.log('Running combined dashboard cron...');
   try {
     const recipients = process.env.EMAIL_RECIPIENTS
@@ -174,22 +174,39 @@ cron.schedule('30 8 * * *', async () => {
       */
       try {
         const { data: buildData } = await axios.get(
-         `${apiUrl}/dashboard/build-data-summary/${project}`
+          `${apiUrl}/dashboard/build-data-summary/${project}`
         );
 
         emailHtml += `<h3>🚀 Weekly Build Delivery</h3>`;
 
         for (const platform of ['PRB', 'VRB']) {
-          const weeklyChart = await generateBuildDeliveryChartBase64(buildData, platform);
-          const factoryChart = await generateFactoryChartBase64(buildData, platform);
-        
+          const key = platform.toLowerCase();
+          const platformData = buildData?.[key];
+
+          if (!platformData) continue;
+
+          const { smartQty = [], nonSmartQty = [] } = platformData;
+
+          // ✅ Check if ALL values are 0
+          const isAllZero =
+            smartQty.every(q => q === 0) &&
+            nonSmartQty.every(q => q === 0);
+
+          // ✅ Choose function based on condition
+          const weeklyChart = isAllZero
+            ? await generateBuildDeliveryChartBase641(buildData, platform)
+            : await generateBuildDeliveryChartBase64(buildData, platform);
+            const factoryChart = isAllZero
+            ? null
+            : await generateFactoryChartBase64(buildData, platform);
+
           if (!weeklyChart && !factoryChart) {
             emailHtml += `<p style="color:brown;">No data meaning no ${platform} systems sent to smart hand.</p>`;
             continue;
           }
-        
+
           emailHtml += `<h4>${platform}</h4>`;
-        
+
           // ✅ Weekly Chart
           if (weeklyChart) {
             const cid1 = `${cidPrefix}_${platform}_weekly`;
@@ -198,13 +215,13 @@ cron.schedule('30 8 * * *', async () => {
               content: Buffer.from(weeklyChart, 'base64'),
               cid: cid1,
             });
-        
+
             emailHtml += `
               <p><b>Weekly vs Accumulative</b></p>
               <img src="cid:${cid1}" style="width:100%;max-width:800px;" />
             `;
           }
-        
+
           // ✅ Factory Chart
           if (factoryChart) {
             const cid2 = `${cidPrefix}_${platform}_factory`;
@@ -213,7 +230,7 @@ cron.schedule('30 8 * * *', async () => {
               content: Buffer.from(factoryChart, 'base64'),
               cid: cid2,
             });
-        
+
             emailHtml += `
               <p><b>Factory (SH vs Non-SH + Accum)</b></p>
               <img src="cid:${cid2}" style="width:100%;max-width:800px;" />
@@ -225,131 +242,131 @@ cron.schedule('30 8 * * *', async () => {
         emailHtml += `<p style="color:red;">Build delivery failed</p>`;
       }
 
-/*
- ====================================================
- 3️⃣ LOCATION ALLOCATION SECTION (original + filtered)
- ====================================================
- */
- try {
-  // Original data (no subcategory filter)
-  const { data: originalData } = await axios.get(
-    `${apiUrl}/dashboard/location-allocation`,
-    { params: { projectName: project, startDate, endDate } }
-  );
+      /*
+       ====================================================
+       3️⃣ LOCATION ALLOCATION SECTION (original + filtered)
+       ====================================================
+       */
+      try {
+        // Original data (no subcategory filter)
+        const { data: originalData } = await axios.get(
+          `${apiUrl}/dashboard/location-allocation`,
+          { params: { projectName: project, startDate, endDate } }
+        );
 
-  const charts = [
-    { type: 'All', platform: 'PRB', data: originalData },
-    { type: 'All', platform: 'VRB', data: originalData }
-  ];
+        const charts = [
+          { type: 'All', platform: 'PRB', data: originalData },
+          { type: 'All', platform: 'VRB', data: originalData }
+        ];
 
-  // Filtered subcategories
-  const prbSubcats = ['1P', '2P'];
-  const vrbSubcats = ['1P', '2P', 'Others'];
+        // Filtered subcategories
+        const prbSubcats = ['1P', '2P'];
+        const vrbSubcats = ['1P', '2P', 'Others'];
 
-  for (const subcat of prbSubcats) {
-    charts.push({ type: `Filtered (${subcat})`, platform: 'PRB', subcat });
-  }
-  for (const subcat of vrbSubcats) {
-    charts.push({ type: `Filtered (${subcat})`, platform: 'VRB', subcat });
-  }
+        for (const subcat of prbSubcats) {
+          charts.push({ type: `Filtered (${subcat})`, platform: 'PRB', subcat });
+        }
+        for (const subcat of vrbSubcats) {
+          charts.push({ type: `Filtered (${subcat})`, platform: 'VRB', subcat });
+        }
 
-  emailHtml += `<h3>📍 Location Allocation (${year})</h3>`;
+        emailHtml += `<h3>📍 Location Allocation (${year})</h3>`;
 
-  let allPrbHasData = false;
-  let allVrbHasData = false;
+        let allPrbHasData = false;
+        let allVrbHasData = false;
 
-  for (const chartInfo of charts) {
-    const { type, platform, data, subcat } = chartInfo;
+        for (const chartInfo of charts) {
+          const { type, platform, data, subcat } = chartInfo;
 
-    // =====================================
-    // 1️⃣ TYPE = ALL → SHOW NON-STACKED IMAGE
-    // =====================================
-    if (type === 'All') {
-      const base64NonStacked = await generateLocationAllocationChartBase64NonStacked(data, platform);
-      const cid = `${cidPrefix}_All_${platform}_NonStacked`;
+          // =====================================
+          // 1️⃣ TYPE = ALL → SHOW NON-STACKED IMAGE
+          // =====================================
+          if (type === 'All') {
+            const base64NonStacked = await generateLocationAllocationChartBase64NonStacked(data, platform);
+            const cid = `${cidPrefix}_All_${platform}_NonStacked`;
 
-      if (base64NonStacked) {
-        // Chart exists → embed it
-        if (platform === 'PRB') allPrbHasData = true;
-        if (platform === 'VRB') allVrbHasData = true;
+            if (base64NonStacked) {
+              // Chart exists → embed it
+              if (platform === 'PRB') allPrbHasData = true;
+              if (platform === 'VRB') allVrbHasData = true;
 
-        attachments.push({
-          filename: `${cid}.png`,
-          content: Buffer.from(base64NonStacked, 'base64'),
-          cid,
-        });
+              attachments.push({
+                filename: `${cid}.png`,
+                content: Buffer.from(base64NonStacked, 'base64'),
+                cid,
+              });
 
-        emailHtml += `
+              emailHtml += `
           <h4>${platform} Total Allocation</h4>
           <img src="cid:${cid}" style="width:100%;max-width:800px;" />
         `;
 
-        // Add link to stacked chart below the embedded chart
-        let stackedUrl = `${apiUrl}/dashboard/location-allocation/chart?projectName=${encodeURIComponent(project)}&platform=${platform}&startDate=${startDate}&endDate=${endDate}`;
-        emailHtml += `
+              // Add link to stacked chart below the embedded chart
+              let stackedUrl = `${apiUrl}/dashboard/location-allocation/chart?projectName=${encodeURIComponent(project)}&platform=${platform}&startDate=${startDate}&endDate=${endDate}`;
+              emailHtml += `
           <p>
             <a href="${stackedUrl}" target="_blank">
               Click to view ${platform} Breakdowns Location Allocation Chart
             </a>
           </p>
         `;
-      } else {
-        // Chart not found → just show message, no link
-        emailHtml += `<p style="color:brown;">No ${platform} build distribution for year ${year}.</p>`;
-      }
-    }
-
-    // =====================================
-    // 2️⃣ FILTERED → DISPLAY LINK ONLY IF NON-STACKED CHART EXISTS
-    // =====================================
-    else {
-      if (
-        (platform === 'PRB' && !allPrbHasData) ||
-        (platform === 'VRB' && !allVrbHasData)
-      ) {
-        // Skip filtered if "All" chart has no data
-        continue;
-      }
-
-      // Fetch filtered data to check if chart exists
-      const { data: filteredData } = await axios.get(
-        `${apiUrl}/dashboard/location-allocation`,
-        {
-          params: {
-            projectName: project,
-            startDate,
-            endDate,
-            ...(platform === 'PRB' ? { prbSubcategories: subcat } : { vrbSubcategories: subcat })
+            } else {
+              // Chart not found → just show message, no link
+              emailHtml += `<p style="color:brown;">No ${platform} build distribution for year ${year}.</p>`;
+            }
           }
-        }
-      );
 
-      const base64Filtered = await generateLocationAllocationChartBase64NonStacked(filteredData, platform);
+          // =====================================
+          // 2️⃣ FILTERED → DISPLAY LINK ONLY IF NON-STACKED CHART EXISTS
+          // =====================================
+          else {
+            if (
+              (platform === 'PRB' && !allPrbHasData) ||
+              (platform === 'VRB' && !allVrbHasData)
+            ) {
+              // Skip filtered if "All" chart has no data
+              continue;
+            }
 
-      if (base64Filtered) {
-        // Chart exists → show link
-        let url = `${apiUrl}/dashboard/location-allocation/nonstacked-chart?projectName=${encodeURIComponent(project)}&platform=${platform}&startDate=${startDate}&endDate=${endDate}`;
-        if (platform === 'PRB') url += `&prbSubcategories=${encodeURIComponent(subcat)}`;
-        else url += `&vrbSubcategories=${encodeURIComponent(subcat)}`;
+            // Fetch filtered data to check if chart exists
+            const { data: filteredData } = await axios.get(
+              `${apiUrl}/dashboard/location-allocation`,
+              {
+                params: {
+                  projectName: project,
+                  startDate,
+                  endDate,
+                  ...(platform === 'PRB' ? { prbSubcategories: subcat } : { vrbSubcategories: subcat })
+                }
+              }
+            );
 
-        emailHtml += `
+            const base64Filtered = await generateLocationAllocationChartBase64NonStacked(filteredData, platform);
+
+            if (base64Filtered) {
+              // Chart exists → show link
+              let url = `${apiUrl}/dashboard/location-allocation/nonstacked-chart?projectName=${encodeURIComponent(project)}&platform=${platform}&startDate=${startDate}&endDate=${endDate}`;
+              if (platform === 'PRB') url += `&prbSubcategories=${encodeURIComponent(subcat)}`;
+              else url += `&vrbSubcategories=${encodeURIComponent(subcat)}`;
+
+              emailHtml += `
           <p>
             <a href="${url}" target="_blank">
               Click to view ${type} ${platform} Total Location Allocation Chart
             </a>
           </p>
         `;
-      } else {
-        // Chart not found → show message instead of link
-        emailHtml += `<p style="color:brown;">No ${type} ${platform} build distribution for year ${year}.</p>`;
-      }
-    }
-  }
+            } else {
+              // Chart not found → show message instead of link
+              emailHtml += `<p style="color:brown;">No ${type} ${platform} build distribution for year ${year}.</p>`;
+            }
+          }
+        }
 
-} catch (err) {
-  console.error('Location allocation failed for project', project, err);
-  emailHtml += `<p style="color:red;">Location allocation failed for ${project}</p>`;
-}
+      } catch (err) {
+        console.error('Location allocation failed for project', project, err);
+        emailHtml += `<p style="color:red;">Location allocation failed for ${project}</p>`;
+      }
     }
 
     // ✅ SEND ONE EMAIL ONLY

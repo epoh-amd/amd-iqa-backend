@@ -552,6 +552,93 @@ const generateBuildDeliveryChartBase64 = async (buildData, platformType) => {
   }
 };
 
+const generateBuildDeliveryChartBase641 = async (buildData, platformType) => {
+  try {
+    const key = platformType.toLowerCase();
+
+    if (!buildData?.[key]?.weekly?.length) return null;
+
+    const weeks = buildData[key].weeks;
+    const weeklyQty = buildData[key].weekly;
+    const accumulatedQty = buildData[key].accumulative;
+
+    const qc = new QuickChart();
+    qc.setConfig({
+      type: 'bar',
+      data: {
+        labels: weeks,
+        datasets: [
+          {
+            type: 'bar',
+            label: `${platformType} Weekly Delivery QTY`,
+            data: weeklyQty,
+            backgroundColor: '#3B82F6',
+            datalabels: {
+              anchor: 'center',
+              align: 'center',
+              color: '#000000',
+              font: { weight: 'bold', size: 12 },
+              formatter: (value) => (value === 0 ? '' : value),
+            },
+          },
+          {
+            type: 'line',
+            label: `Accum. ${platformType} Delivery QTY`,
+            data: accumulatedQty,
+            borderColor: '#F97316',
+            fill: false,
+            tension: 0.3,
+            pointRadius: 4,
+            datalabels: {
+              anchor: 'end',      // move label away from point
+              align: 'top',       // position above the line
+              offset: 6,          // add spacing
+              color: '#F97316',
+              font: { weight: 'bold', size: 11 },
+              formatter: (value) => (value === 0 ? '' : value),
+            },
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          title: {
+            display: true,
+            text: `${platformType} Weekly Build Delivery`,
+            font: { size: 18 },
+          },
+          legend: { position: 'bottom' },
+          datalabels: {
+            display: true, // enable globally but styling per dataset
+          },
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            title: {
+              display: true,
+              text: 'Build Delivery QTY',
+            },
+          },
+        },
+      },
+      plugins: ['chartjs-plugin-datalabels'],
+    });
+
+    qc.setWidth(1000);
+    qc.setHeight(400);
+    qc.setBackgroundColor('white');
+
+    const binary = await qc.toBinary();
+    return binary.toString('base64');
+  } catch (err) {
+    console.error(`Chart generation failed for ${platformType}:`, err);
+    return null;
+  }
+};
+
+
 //up down 
 /*
 const generateBuildDeliveryChartBase64 = async (buildData, platformType) => {
@@ -1048,5 +1135,6 @@ module.exports = {
   generateLocationAllocationChartBase64,
   generateBuildDeliveryChartBase64,
   generateFactoryChartBase64,
-  generateLocationAllocationChartBase64NonStacked
+  generateLocationAllocationChartBase64NonStacked,
+  generateBuildDeliveryChartBase641
 };

@@ -1856,6 +1856,21 @@ app.get('/api/dashboard/quality-data/:projectName', (req, res) => {
               color: categoryColorMap[category]
             });
 
+            // ✅ Fix total to 100%
+            let totalPercent = pieData.reduce((sum, item) => sum + item.value, 0);
+            let diff = 100 - totalPercent;
+
+            if (diff !== 0 && pieData.length > 0) {
+              // Adjust the largest slice (usually "Good")
+              const maxIndex = pieData.reduce(
+                (maxIdx, item, i, arr) =>
+                  item.value > arr[maxIdx].value ? i : maxIdx,
+                0
+              );
+
+              pieData[maxIndex].value += diff;
+            }
+
           }
 
         });

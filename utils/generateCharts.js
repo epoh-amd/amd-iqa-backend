@@ -45,6 +45,7 @@ const generatePieChartBase64 = async (qualityData, type) => {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      rotation: 120,
       layout: {
         padding: {
           top: 40,
@@ -207,22 +208,32 @@ const generateLocationAllocationChartBase64NonStacked = async (locationData, pla
     return sum;
   });
 
-  // Assign color per platform
-  const backgroundColor = platformType === 'PRB' ? '#3B82F6' : '#F97316'; // PRB = blue, VRB = orange
+  const backgroundColor = platformType === 'PRB' ? '#3B82F6' : '#F97316';
 
   const qc = new QuickChart();
+
+  // ✅ FORCE Chart.js v3
+  qc.setVersion('3');
+
   qc.setConfig({
     type: 'bar',
     data: {
       labels,
-      datasets: [{
-        label: `Total Delivery Volume by Location in ${year}`,
-        data: totals,
-        backgroundColor,
-      }],
+      datasets: [
+        {
+          label: `Total Delivery Volume by Location in ${year}`,
+          data: totals,
+          backgroundColor,
+        },
+      ],
     },
     options: {
       responsive: true,
+      layout: {
+        padding: {
+          top: 20, // ✅ prevent label clipping
+        },
+      },
       plugins: {
         title: {
           display: true,
@@ -230,20 +241,39 @@ const generateLocationAllocationChartBase64NonStacked = async (locationData, pla
           font: { size: 18 },
         },
         legend: { display: false },
-        tooltip: { mode: 'index', intersect: false },
+        tooltip: {
+          mode: 'index',
+          intersect: false,
+        },
         datalabels: {
           anchor: 'end',
           align: 'end',
+          offset: 4,
           color: '#000',
           font: { weight: 'bold', size: 12 },
-          formatter: value => value === 0 ? '' : value,
+          // ✅ MUST be string for QuickChart
+          formatter: 'function(value) { return value === 0 ? "" : value; }',
         },
       },
       scales: {
-        x: { title: { display: true, text: 'Location' } },
-        y: { beginAtZero: true, title: { display: true, text: 'Delivery Quantity' } },
+        x: {
+          title: {
+            display: true,
+            text: 'Location',
+          },
+        },
+        y: {
+          beginAtZero: true,
+          min: 0, // ✅ force start at 0
+          suggestedMax: Math.max(...totals) + 5, // ✅ avoid top cutoff
+          title: {
+            display: true,
+            text: 'Delivery Quantity',
+          },
+        },
       },
     },
+    plugins: ['chartjs-plugin-datalabels'], // ✅ REQUIRED for v3
   });
 
   qc.setWidth(1000);
@@ -552,6 +582,7 @@ const generateBuildDeliveryChartBase64 = async (buildData, platformType) => {
   }
 };
 
+//without factory delivery data
 const generateBuildDeliveryChartBase641 = async (buildData, platformType) => {
   try {
     const key = platformType.toLowerCase();
@@ -563,6 +594,10 @@ const generateBuildDeliveryChartBase641 = async (buildData, platformType) => {
     const accumulatedQty = buildData[key].accumulative;
 
     const qc = new QuickChart();
+
+    // ✅ FORCE Chart.js v3
+    qc.setVersion('3');
+
     qc.setConfig({
       type: 'bar',
       data: {
@@ -578,7 +613,8 @@ const generateBuildDeliveryChartBase641 = async (buildData, platformType) => {
               align: 'center',
               color: '#000000',
               font: { weight: 'bold', size: 12 },
-              formatter: (value) => (value === 0 ? '' : value),
+              // ✅ MUST be string in QuickChart
+              formatter: 'function(value) { return value === 0 ? "" : value; }',
             },
           },
           {
@@ -586,36 +622,47 @@ const generateBuildDeliveryChartBase641 = async (buildData, platformType) => {
             label: `Accum. ${platformType} Delivery QTY`,
             data: accumulatedQty,
             borderColor: '#F97316',
+            backgroundColor: '#F97316',
             fill: false,
             tension: 0.3,
             pointRadius: 4,
+            clip: false, // ✅ prevent label cutoff
             datalabels: {
-              anchor: 'end',      // move label away from point
-              align: 'top',       // position above the line
-              offset: 6,          // add spacing
+              anchor: 'end',
+              align: 'top',
+              offset: 6,
               color: '#F97316',
               font: { weight: 'bold', size: 11 },
-              formatter: (value) => (value === 0 ? '' : value),
+              formatter: 'function(value) { return value === 0 ? "" : value; }',
             },
           },
         ],
       },
       options: {
         responsive: true,
+        layout: {
+          padding: {
+            top: 20, // ✅ avoid top clipping
+          },
+        },
         plugins: {
           title: {
             display: true,
             text: `${platformType} Weekly Build Delivery`,
             font: { size: 18 },
           },
-          legend: { position: 'bottom' },
+          legend: {
+            position: 'bottom',
+          },
           datalabels: {
-            display: true, // enable globally but styling per dataset
+            display: true,
           },
         },
         scales: {
           y: {
             beginAtZero: true,
+            min: 0, // ✅ FORCE start at 0
+            suggestedMax: Math.max(...accumulatedQty) + 5, // ✅ prevent label cutoff
             title: {
               display: true,
               text: 'Build Delivery QTY',
@@ -637,7 +684,6 @@ const generateBuildDeliveryChartBase641 = async (buildData, platformType) => {
     return null;
   }
 };
-
 
 //up down 
 /*

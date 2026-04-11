@@ -289,11 +289,14 @@ const generateLocationAllocationChartBase64NonStacked = async (locationData, pla
 
 const generateLocationAllocationChartBase64 = async (
   locationData,
-  platformType
+  platformType,
+  projectName
 ) => {
   if (!locationData?.[platformType]?.chartData?.length) {
     return null;
   }
+
+  const cleanProjectName = String(projectName).trim();
 
   const chartData = locationData[platformType].chartData;
 
@@ -371,21 +374,21 @@ const generateLocationAllocationChartBase64 = async (
         x: {
           title: { display: true, text: 'Location' },
         },
-        y: {
-          stacked: true,
-          beginAtZero: true,
-          title: {
-            display: true,
-            text: 'Delivery Quantity',
-          },
-        },
+        y: { 
+          stacked: true, 
+          beginAtZero: true, 
+          title: { display: true, text: 'Delivery Quantity', },
+         },
         plugins: ['chartjs-plugin-datalabels'],
       },
     },
   });
 
   qc.setWidth(1000);
-  qc.setHeight(400);
+  //qc.setHeight(800);
+  const isSP7 =  cleanProjectName === 'Weisshorn SP7' && platformType === 'PRB';
+
+  qc.setHeight(isSP7 ? 800 : 600);
   qc.setBackgroundColor('white');
 
   return await qc.toBinary().then(buf => buf.toString('base64'));

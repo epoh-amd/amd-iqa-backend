@@ -6647,7 +6647,8 @@ app.get('/api/dashboard/location-allocation/chart', async (req, res) => {
     // Generate chart
     const base64 = await generateLocationAllocationChartBase64(
       locationData,
-      platform
+      platform,
+      projectName
     );
 
     if (!base64) {

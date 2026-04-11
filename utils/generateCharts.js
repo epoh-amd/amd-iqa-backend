@@ -189,7 +189,7 @@ const generateBarChartBase64 = async (qualityData, type) => {
   return imageBuffer.toString('base64');
 };
 
-const generateLocationAllocationChartBase64NonStacked = async (locationData, platformType) => {
+const generateLocationAllocationChartBase64NonStacked = async (locationData, platformType, subcat) => {
   const year = new Date().getFullYear();
   if (!locationData?.[platformType]?.chartData?.length) return null;
 
@@ -221,7 +221,6 @@ const generateLocationAllocationChartBase64NonStacked = async (locationData, pla
       labels,
       datasets: [
         {
-          label: `Total Delivery Volume by Location in ${year}`,
           data: totals,
           backgroundColor,
         },
@@ -237,7 +236,9 @@ const generateLocationAllocationChartBase64NonStacked = async (locationData, pla
       plugins: {
         title: {
           display: true,
-          text: `${platformType} Total Location Allocation`,
+          text: subcat
+          ? `${platformType} ${subcat} Total Location Allocation`
+          : `${platformType} Total Location Allocation`,
           font: { size: 18 },
         },
         legend: { display: false },
@@ -282,6 +283,8 @@ const generateLocationAllocationChartBase64NonStacked = async (locationData, pla
 
   return await qc.toBinary().then(buf => buf.toString('base64'));
 };
+
+
 
 
 const generateLocationAllocationChartBase64 = async (
@@ -1182,5 +1185,6 @@ module.exports = {
   generateBuildDeliveryChartBase64,
   generateFactoryChartBase64,
   generateLocationAllocationChartBase64NonStacked,
+  generateLocationAllocationChartBase64NonStacked_withsubcat,
   generateBuildDeliveryChartBase641
 };

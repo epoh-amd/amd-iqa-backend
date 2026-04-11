@@ -36,7 +36,7 @@ const sendCombinedDashboardEmail = async (html, attachments, recipients) => {
 
 
 
-cron.schedule('0 15 * * *', async () => {
+cron.schedule('0 17 * * *', async () => {
   console.log('Running combined dashboard cron...');
   try {
     const recipients = process.env.EMAIL_RECIPIENTS
@@ -340,8 +340,9 @@ cron.schedule('0 15 * * *', async () => {
                 }
               }
             );
+            
 
-            const base64Filtered = await generateLocationAllocationChartBase64NonStacked(filteredData, platform);
+            const base64Filtered = await generateLocationAllocationChartBase64NonStacked(filteredData, platform, subcat);
 
             if (base64Filtered) {
               // Chart exists → show link

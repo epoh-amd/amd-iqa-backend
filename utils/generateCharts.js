@@ -1185,6 +1185,5 @@ module.exports = {
   generateBuildDeliveryChartBase64,
   generateFactoryChartBase64,
   generateLocationAllocationChartBase64NonStacked,
-  generateLocationAllocationChartBase64NonStacked_withsubcat,
   generateBuildDeliveryChartBase641
 };

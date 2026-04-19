@@ -35,3 +35,73 @@ ALTER TABLE iqadb01.project_forecast_configs ADD CONSTRAINT fk_project2 FOREIGN 
 then ALTER TABLE project_por_targets
 ADD COLUMN smart_quantity INT DEFAULT 0,
 ADD COLUMN non_smart_quantity INT DEFAULT 0;
+
+
+
+13/4/26 changes
+ALTER TABLE master_builds
+MODIFY COLUMN master_status ENUM(
+  'Build Completed',
+  'Missing Information',
+  'Incomplete',
+  'Need Paperwork',
+  'Ready for Pick up',
+  'Need CG Update',
+  'Delivered - Need CG Update',
+  'Delivered',
+  'Pending Rework',
+  'Sent for Rework',
+  'Back from Rework',
+  'Reclaimed',
+  'Bad'
+);
+
+
+UPDATE master_builds
+SET master_status = 'Ready for Pick up'
+WHERE master_status = 'Ready for Delivery';
+
+
+15/4/26 changes
+CREATE TABLE rework_pass (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    chassis_sn VARCHAR(100)
+      CHARACTER SET utf8mb4
+      COLLATE utf8mb4_general_ci
+      NOT NULL,
+    notes TEXT,
+    CONSTRAINT fk_rework_pass_chassis
+    FOREIGN KEY (chassis_sn)
+    REFERENCES builds(chassis_sn)
+    ON DELETE CASCADE
+    ON UPDATE CASCADE
+);
+
+ALTER TABLE rework_pass ADD UNIQUE (chassis_sn);
+
+
+CREATE TABLE rma (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  chassis_sn VARCHAR(100)
+      CHARACTER SET utf8mb4
+      COLLATE utf8mb4_general_ci
+      NOT NULL,
+  pass_fail ENUM('Pass', 'Fail'),
+  notes TEXT,
+  dimm VARCHAR(10),
+  bmc VARCHAR(10),
+  m2 VARCHAR(10),
+  liquid_cooler VARCHAR(10),
+  location ENUM('Metcenter', 'Ceva', 'GUI Sheet location', 'Oracle'),
+  rma varchar(10),
+  status ENUM('Available', 'Delivered'),
+  CONSTRAINT fk_rma_chassis
+    FOREIGN KEY (chassis_sn)
+    REFERENCES builds(chassis_sn)
+    ON DELETE CASCADE
+    ON UPDATE CASCADE
+);
+
+
+ALTER TABLE rma ADD UNIQUE (chassis_sn);
+

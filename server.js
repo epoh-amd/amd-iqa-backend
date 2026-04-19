@@ -3867,6 +3867,146 @@ app.patch('/api/builds/:chassisSN/status', async (req, res) => {
   }
 });
 
+// POST /api/rework-pass
+app.post('/api/rework-pass', async (req, res) => {
+  const { chassis_sn, notes } = req.body;
+
+  console.log('Incoming body:', req.body);
+
+  if (!chassis_sn) {
+    return res.status(400).json({ error: 'chassis_sn is required' });
+  }
+
+  try {
+    await db.promise().execute(
+      `INSERT INTO rework_pass (chassis_sn, notes)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE
+       notes = VALUES(notes)`,
+      [chassis_sn, notes || null]
+    );
+
+    res.json({
+      success: true,
+      message: 'Rework pass saved successfully'
+    });
+
+  } catch (error) {
+    console.error('Error inserting rework pass:', error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+
+
+app.get('/api/rework-pass/:chassisSN', async (req, res) => {
+  const { chassisSN } = req.params;
+
+  try {
+    const [rows] = await db.promise().execute(
+      `SELECT chassis_sn, notes FROM rework_pass WHERE chassis_sn = ?`,
+      [chassisSN]
+    );
+
+    res.json(rows[0] || null);
+  } catch (error) {
+    console.error('Error fetching rework:', error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+
+app.get('/api/rma/:chassisSN', async (req, res) => {
+  const { chassisSN } = req.params;
+
+  try {
+    const [rows] = await db.promise().execute(
+      `SELECT * FROM rma WHERE chassis_sn = ?`,
+      [chassisSN]
+    );
+
+    res.json(rows[0] || null);
+  } catch (error) {
+    console.error('Error fetching rework:', error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+
+// POST /api/rma
+app.post('/api/rma', async (req, res) => {
+  const {
+    chassis_sn,
+    pass_fail,
+    notes,
+    dimm,
+    bmc,
+    m2,
+    liquid_cooler,
+    location,
+    rma,
+    status
+  } = req.body;
+
+  console.log('Incoming RMA body:', req.body);
+
+  // ✅ Required field
+  if (!chassis_sn) {
+    return res.status(400).json({ error: 'chassis_sn is required' });
+  }
+
+  try {
+    await db.promise().execute(
+      `
+      INSERT INTO rma (
+        chassis_sn,
+        pass_fail,
+        notes,
+        dimm,
+        bmc,
+        m2,
+        liquid_cooler,
+        location,
+        rma,
+        status
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON DUPLICATE KEY UPDATE
+        pass_fail = VALUES(pass_fail),
+        notes = VALUES(notes),
+        dimm = VALUES(dimm),
+        bmc = VALUES(bmc),
+        m2 = VALUES(m2),
+        liquid_cooler = VALUES(liquid_cooler),
+        location = VALUES(location),
+        rma = VALUES(rma),
+        status = VALUES(status)
+      `,
+      [
+        chassis_sn,
+        pass_fail || null,
+        notes || null,
+        dimm || null,
+        bmc || null,
+        m2 || null,
+        liquid_cooler || null,
+        location || null,
+        rma || null,
+        status || 'Available'
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: 'RMA saved successfully'
+    });
+
+  } catch (error) {
+    console.error('Error inserting RMA:', error);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 /**
  * GET /api/builds/:chassisSN/complete
  * 

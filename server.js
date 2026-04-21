@@ -630,6 +630,164 @@ app.get('/api/dashboard/projects', (req, res) => {
   });
 });
 
+const generateBMCName = (platformType, chassisSN) => {
+  if (!platformType || !chassisSN) return '';
+
+  const platformName = extractManufacturerPrefix(platformType);
+  const lastFourDigits = chassisSN.slice(-4); // or .padStart(4, '0')
+
+  return `${platformName}-${lastFourDigits}`;
+};
+
+// Helper: Extract manufacturer prefix
+const extractManufacturerPrefix = (platformType) => {
+  const specialCases = {
+    'Marley-Jamaica': 'Marley-Jamaica'
+  };
+
+  for (const [key, value] of Object.entries(specialCases)) {
+    if (platformType.includes(key)) {
+      return value;
+    }
+  }
+
+  const matches = platformType.match(/(?::\s*)([A-Z][a-z]{3,})/);
+  if (matches && matches[1]) {
+    return matches[1];
+  }
+
+  const words = platformType.split(/\s+/);
+  return words.find(word => word.length > 3) || words[0] || '';
+};
+
+
+// PUT /api/builds/:chassis_sn
+app.put('/api/builds/bulk-update', async (req, res) => {
+  const { updates } = req.body;
+
+  if (!updates || Object.keys(updates).length === 0) {
+    return res.status(400).json({ error: 'No updates provided' });
+  }
+
+  try {
+    const conn = db.promise();
+
+    for (const chassis_sn in updates) {
+      const row = updates[chassis_sn];
+
+      const fields = [];
+      const values = [];
+
+      let generatedBMC = null;
+      let manufacturerName = null;
+
+      // ✅ Only trigger when chassis_sn changes
+      if (row.chassis_sn !== undefined && row.chassis_sn !== chassis_sn) {
+
+        // 1. Get existing platform_type
+        const [rows] = await conn.execute(
+          'SELECT platform_type FROM builds WHERE chassis_sn = ?',
+          [chassis_sn]
+        );
+
+        const platformType = rows[0]?.platform_type;
+
+        if (platformType) {
+          // 2. Generate BMC name
+          generatedBMC = generateBMCName(platformType, row.chassis_sn);
+
+          // 3. Extract prefix from BMC name
+          const prefix = extractPrefixFromBMC(generatedBMC);
+
+          // 4. Lookup manufacturer
+          const [mRows] = await conn.execute(
+            'SELECT manufacturer_name FROM manufacturers WHERE platform_prefix = ?',
+            [prefix]
+          );
+
+          if (mRows.length > 0) {
+            manufacturerName = mRows[0].manufacturer_name;
+          }
+        }
+      }
+
+      const allowedFields = [
+        'location',
+        'system_pn',
+        'po',
+        'bmc_mac',
+        'mb_sn',
+        'ethernet_mac',
+        'cpu_socket',
+        'cpu_vendor',
+        'chassis_sn',
+        'chassis_type',
+        'cpu_p0_sn',
+        'cpu_p0_socket_date_code',
+        'cpu_p1_sn',
+        'cpu_p1_socket_date_code'
+      ];
+
+      allowedFields.forEach((field) => {
+        if (row[field] !== undefined) {
+          fields.push(`${field} = ?`);
+          values.push(row[field]);
+        }
+      });
+
+      // ✅ Update BMC name
+      if (generatedBMC) {
+        fields.push('bmc_name = ?');
+        values.push(generatedBMC);
+      }
+
+      // ✅ Update manufacturer
+      if (manufacturerName) {
+        fields.push('manufacturer = ?');
+        values.push(manufacturerName);
+      }
+
+      if (fields.length === 0) continue;
+
+      values.push(chassis_sn);
+
+      await conn.execute(
+        `UPDATE builds SET ${fields.join(', ')}, updated_at = NOW()
+         WHERE chassis_sn = ?`,
+        values
+      );
+    }
+
+    res.json({ success: true });
+
+  } catch (err) {
+    console.error('Bulk update error:', err);
+    res.status(500).json({ error: 'Update failed' });
+  }
+});
+
+
+app.get('/api/projects', async (req, res) => {
+  const { chassis_sn } = req.query;
+
+  try {
+    const [rows] = await db.promise().execute(`
+      SELECT p.id, p.project_name
+      FROM builds b
+      JOIN project_name p ON b.project_name = p.id
+      WHERE b.chassis_sn = ?
+      LIMIT 1
+    `, [chassis_sn]);
+
+    res.json(rows[0] || null);
+  } catch (err) {
+    console.error('Error fetching project by chassis:', err);
+    res.status(500).send('Error fetching project');
+  }
+});
+
+
+
 //http://localhost:5000/api/dashboard/build-data/Weisshorn%20SP7
 /**
  * GET /api/dashboard/build-data/:projectName
@@ -3006,6 +3164,22 @@ app.get('/api/platform-info/:systemPN', (req, res) => {
   });
 });
 
+app.get('/api/platform', (req, res) => {
+  const query = `
+    SELECT system_pn, platform_type
+    FROM platform_info
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching platform info:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+
+    res.json(results);
+  });
+});
+
 /**
  * GET /api/manufacturer/:platformPrefix
  * 
@@ -5211,6 +5385,31 @@ app.patch('/api/master-builds/:chassisSN', (req, res) => {
       message: 'Master build data updated successfully'
     });
   });
+});
+
+
+app.get('/api/rma', async (req, res) => {
+  try {
+    const [rows] = await db.promise().execute(`
+      SELECT 
+        chassis_sn,
+        pass_fail,
+        notes,
+        dimm,
+        bmc,
+        m2,
+        liquid_cooler,
+        location,
+        rma,
+        status
+      FROM rma
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send('Error fetching RMA');
+  }
 });
 
 // ============================================================================

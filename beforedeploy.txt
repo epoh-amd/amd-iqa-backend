@@ -1,0 +1,123 @@
+modify the profile.js. uncomment the getlocationfrom OU
+   const userData = {
+          sAMAccountName: sAMAccountName,
+          email: mail || userPrincipalName,
+          employee_number: employeeID,
+          cost_center_number: departmentNumber,
+          department: department,
+          location:  "Penang",//getLocationFromOU(dn),
+          display_name: displayName,
+          first_name: givenName,
+          last_name: sn
+        };
+
+//for DB modify
+create new table project_name
+
+UPDATE builds
+SET project_name = CASE
+    WHEN project_name = 'Weisshorn SP8' THEN 1
+    WHEN project_name = 'Weisshorn SP7' THEN 2
+END
+WHERE project_name IN ('Weisshorn SP8', 'Weisshorn SP7');
+
+change data type for project name
+
+ALTER TABLE builds
+ADD CONSTRAINT fk_project
+FOREIGN KEY (project_name)
+REFERENCES project_name(id);
+
+
+CREATE TABLE rma_history (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  chassis_sn VARCHAR(100),
+  pass_fail ENUM('Pass','Fail'),
+  notes TEXT,
+  dimm VARCHAR(10),
+  bmc VARCHAR(10),
+  m2 VARCHAR(10),
+  liquid_cooler VARCHAR(10),
+  location ENUM('Metcenter','Ceva','GUI Sheet location','Oracle'),
+  rma VARCHAR(10),
+  status ENUM('Available','Delivered'),
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+add po collumn in db
+
+modify project_name in project_forecast_configs to int, then
+ALTER TABLE iqadb01.project_forecast_configs ADD CONSTRAINT fk_project2 FOREIGN KEY (project_name) REFERENCES project_name(id);
+then ALTER TABLE project_por_targets
+ADD COLUMN smart_quantity INT DEFAULT 0,
+ADD COLUMN non_smart_quantity INT DEFAULT 0;
+
+
+
+13/4/26 changes
+ALTER TABLE master_builds
+MODIFY COLUMN master_status ENUM(
+  'Build Completed',
+  'Missing Information',
+  'Incomplete',
+  'Need Paperwork',
+  'Ready for Pick up',
+  'Need CG Update',
+  'Delivered - Need CG Update',
+  'Delivered',
+  'Pending Rework',
+  'Sent for Rework',
+  'Back from Rework',
+  'Reclaimed',
+  'Bad'
+);
+
+
+UPDATE master_builds
+SET master_status = 'Ready for Pick up'
+WHERE master_status = 'Ready for Delivery';
+
+
+15/4/26 changes
+CREATE TABLE rework_pass (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    chassis_sn VARCHAR(100)
+      CHARACTER SET utf8mb4
+      COLLATE utf8mb4_general_ci
+      NOT NULL,
+    notes TEXT,
+    CONSTRAINT fk_rework_pass_chassis
+    FOREIGN KEY (chassis_sn)
+    REFERENCES builds(chassis_sn)
+    ON DELETE CASCADE
+    ON UPDATE CASCADE
+);
+
+ALTER TABLE rework_pass ADD UNIQUE (chassis_sn);
+
+
+CREATE TABLE rma (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  chassis_sn VARCHAR(100)
+      CHARACTER SET utf8mb4
+      COLLATE utf8mb4_general_ci
+      NOT NULL,
+  pass_fail ENUM('Pass', 'Fail'),
+  notes TEXT,
+  dimm VARCHAR(10),
+  bmc VARCHAR(10),
+  m2 VARCHAR(10),
+  liquid_cooler VARCHAR(10),
+  location ENUM('Metcenter', 'Ceva', 'GUI Sheet location', 'Oracle'),
+  rma varchar(10),
+  status ENUM('Available', 'Delivered'),
+  CONSTRAINT fk_rma_chassis
+    FOREIGN KEY (chassis_sn)
+    REFERENCES builds(chassis_sn)
+    ON DELETE CASCADE
+    ON UPDATE CASCADE
+);
+
+
+ALTER TABLE rma ADD UNIQUE (chassis_sn);
+

@@ -4147,7 +4147,8 @@ app.get('/api/rma-history/:chassis_sn', async (req, res) => {
         location,
         rma,
         status,
-        updated_at
+        updated_at,
+        updated_by
       FROM rma_history
       WHERE chassis_sn = ?
       ORDER BY updated_at DESC
@@ -4175,7 +4176,8 @@ app.post('/api/rma', async (req, res) => {
     liquid_cooler,
     location,
     rma,
-    status
+    status,
+    updated_by
   } = req.body;
 
   if (!chassis_sn) {
@@ -4205,9 +4207,10 @@ app.post('/api/rma', async (req, res) => {
           liquid_cooler,
           location,
           rma,
-          status
+          status,
+          updated_by
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           current.chassis_sn,
@@ -4219,7 +4222,8 @@ app.post('/api/rma', async (req, res) => {
           current.liquid_cooler,
           current.location,
           current.rma,
-          current.status
+          current.status,
+          updated_by || 'unknown'
         ]
       );
     }

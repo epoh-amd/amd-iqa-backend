@@ -121,3 +121,6 @@ CREATE TABLE rma (
 
 ALTER TABLE rma ADD UNIQUE (chassis_sn);
 
+ALTER TABLE rma_history 
+ADD COLUMN updated_by VARCHAR(255);
+

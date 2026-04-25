@@ -5589,6 +5589,7 @@ app.post('/api/search-builds', (req, res) => {
     params.push(`%${filters.projectName}%`);
   }
 
+
   // System P/N filter - Handle both array (multi-select) and string (backward compatibility)
   if (filters.systemPN) {
     if (Array.isArray(filters.systemPN) && filters.systemPN.length > 0) {
@@ -5815,9 +5816,13 @@ app.post('/api/search-builds', (req, res) => {
     params.push(`%${filters.jiraTicketNo}%`);
   }
 
-  if (filters.changegearAssetId) {
-    query += ' AND mb.changegear_asset_id LIKE ?';
-    params.push(`%${filters.changegearAssetId}%`);
+  if (Array.isArray(filters.changegearAssetId) && filters.changegearAssetId.length > 0) {
+    const conditions = filters.changegearAssetId
+      .map(() => 'mb.changegear_asset_id = ?')
+      .join(' OR ');
+  
+    query += ` AND (${conditions})`;
+    params.push(...filters.changegearAssetId);
   }
 
   if (filters.masterStatus) {
@@ -5887,6 +5892,29 @@ app.post('/api/search-builds', (req, res) => {
     });
 
     res.json(results);
+  });
+});
+
+// GET all unique ChangeGear Asset IDs
+app.get('/api/changegear-options', (req, res) => {
+  const query = `
+    SELECT DISTINCT changegear_asset_id 
+    FROM master_builds
+    WHERE changegear_asset_id IS NOT NULL
+      AND changegear_asset_id != ''
+    ORDER BY changegear_asset_id
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching ChangeGear options:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+
+    // Convert to simple array
+    const options = results.map(row => row.changegear_asset_id);
+
+    res.json(options);
   });
 });
 

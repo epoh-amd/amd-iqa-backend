@@ -124,3 +124,19 @@ ALTER TABLE rma ADD UNIQUE (chassis_sn);
 ALTER TABLE rma_history 
 ADD COLUMN updated_by VARCHAR(255);
 
+
+CREATE TABLE waiver_drafts (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id VARCHAR(100) UNIQUE,
+  form_data JSON,
+  material_rows JSON,
+  open_section JSON,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+ALTER TABLE waiver_drafts
+ADD process_data JSON,
+ADD test_data JSON,
+ADD spec_data JSON,
+ADD rework_data JSON,
+ADD label_data JSON;

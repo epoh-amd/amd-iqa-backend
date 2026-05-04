@@ -49,6 +49,10 @@ const { setupOktaAuth } = require('./middleware/auth');
 const axios = require('axios');
 const app = express();
 
+
+
+
+
 // ============================================================================
 // PRODUCTION MIDDLEWARE SETUP
 // ============================================================================
@@ -115,6 +119,61 @@ app.use((req, res, next) => {
 // Trust proxy (needed for rate limiting behind reverse proxy)
 app.set('trust proxy', 1);
 
+
+const multerStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "drafts/");
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname));
+  }
+});
+
+const draft = multer({ storage: multerStorage });
+
+//uploads files
+app.post("/api/upload", draft.single("file"), (req, res) => {
+  /*
+  try {
+    const oldFile = req.body.oldFile; // e.g. /drafts/abc.png
+
+    // 1. DELETE OLD FILE (if exists)
+    if ((oldFile && oldFile !== "null" && oldFile !== "")) {
+      const oldPath = path.join(__dirname, "drafts", path.basename(oldFile));
+      console.log("Deleting:", oldPath);
+
+      if (fs.existsSync(oldPath)) {
+        fs.unlinkSync(oldPath); // 🔥 delete old file
+      }
+    }
+
+    // 2. RETURN NEW FILE PATH
+    return res.json({
+      filePath: `/drafts/${req.file.filename}`
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Upload failed" });
+  }
+    */
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    return res.json({
+      filePath: `/drafts/${req.file.filename}`
+    });
+
+  } catch (err) {
+    console.error("Upload failed:", err);
+    res.status(500).json({ error: "Upload failed" });
+  }
+});
+
+
+app.use("/drafts", express.static(path.join(__dirname, "drafts")));
 // ============================================================================
 // STATIC FILE SERVING (for non-sudo deployments without Nginx)
 // ============================================================================
@@ -661,6 +720,13 @@ const extractManufacturerPrefix = (platformType) => {
 };
 
 
+const extractPrefixFromBMC = (bmcName) => {
+  if (!bmcName) return '';
+
+  return bmcName.split('-')[0];
+};
+
+
 // PUT /api/builds/:chassis_sn
 app.put('/api/builds/bulk-update', async (req, res) => {
   const { updates } = req.body;
@@ -672,6 +738,8 @@ app.put('/api/builds/bulk-update', async (req, res) => {
   try {
     const conn = db.promise();
 
+
+
     for (const chassis_sn in updates) {
       const row = updates[chassis_sn];
 
@@ -680,6 +748,21 @@ app.put('/api/builds/bulk-update', async (req, res) => {
 
       let generatedBMC = null;
       let manufacturerName = null;
+
+      let projectNameId = null;
+
+      if (row.project_name !== undefined) {
+        const [pRows] = await conn.execute(
+          'SELECT id FROM project_name WHERE project_name = ?',
+          [row.project_name]
+        );
+
+        if (pRows.length > 0) {
+          projectNameId = pRows[0].id;
+        } else {
+          throw new Error(`Project name "${row.project_name}" not found`);
+        }
+      }
 
       // ✅ Only trigger when chassis_sn changes
       if (row.chassis_sn !== undefined && row.chassis_sn !== chassis_sn) {
@@ -725,7 +808,22 @@ app.put('/api/builds/bulk-update', async (req, res) => {
         'cpu_p0_sn',
         'cpu_p0_socket_date_code',
         'cpu_p1_sn',
-        'cpu_p1_socket_date_code'
+        'cpu_p1_socket_date_code',
+        'm2_pn',
+        'm2_sn',
+        'dimm_pn',
+        'dimm_qty',
+
+        // ✅ TESTING FIELDS
+        'visual_inspection_status',
+        'boot_status',
+        'dimms_detected_status',
+        'lom_working_status',
+
+        'bios_version',
+        'bmc_version',
+        'scm_fpga_version',
+        'hpm_fpga_version',
       ];
 
       allowedFields.forEach((field) => {
@@ -734,6 +832,11 @@ app.put('/api/builds/bulk-update', async (req, res) => {
           values.push(row[field]);
         }
       });
+
+      if (projectNameId !== null) {
+        fields.push('project_name = ?'); // this is your FK column in builds
+        values.push(projectNameId);
+      }
 
       // ✅ Update BMC name
       if (generatedBMC) {
@@ -747,15 +850,43 @@ app.put('/api/builds/bulk-update', async (req, res) => {
         values.push(manufacturerName);
       }
 
-      if (fields.length === 0) continue;
+      // ============================================
+      // ✅ UPDATE BUILDS TABLE
+      // ============================================
+      if (fields.length > 0) {
+        values.push(chassis_sn);
 
-      values.push(chassis_sn);
+        await conn.execute(
+          `UPDATE builds SET ${fields.join(', ')}, updated_at = NOW()
+           WHERE chassis_sn = ?`,
+          values
+        );
+      }
 
-      await conn.execute(
-        `UPDATE builds SET ${fields.join(', ')}, updated_at = NOW()
-         WHERE chassis_sn = ?`,
-        values
-      );
+      // ============================================
+      // ✅ DIMM SERIAL NUMBERS HANDLING
+      // ============================================
+      if (row.dimmSNs !== undefined && Array.isArray(row.dimmSNs)) {
+        // 1. Delete existing DIMMs
+        await conn.execute(
+          'DELETE FROM dimm_serial_numbers WHERE chassis_sn = ?',
+          [chassis_sn]
+        );
+
+        // 2. Prepare bulk insert
+        const dimmValues = row.dimmSNs
+          .filter(sn => sn && sn.trim())
+          .map(sn => [chassis_sn, sn.trim()]);
+
+        // 3. Insert new DIMMs
+        if (dimmValues.length > 0) {
+          await conn.query(
+            `INSERT INTO dimm_serial_numbers (chassis_sn, dimm_sn)
+             VALUES ?`,
+            [dimmValues]
+          );
+        }
+      }
     }
 
     res.json({ success: true });
@@ -1871,18 +2002,6 @@ app.get('/api/dashboard/quality-data/:projectName', (req, res) => {
 
   const projectQuery = ` SELECT id FROM project_name WHERE project_name = ? `;
 
-  const query = `
-    SELECT
-      b.platform_type,
-      b.chassis_sn,
-      bf.failure_mode,
-      bf.failure_category
-    FROM builds b
-    LEFT JOIN build_failures bf ON b.chassis_sn = bf.chassis_sn
-    WHERE b.project_name = ?
-      AND (b.platform_type LIKE '%PRB%' OR b.platform_type LIKE '%VRB%')
-  `;
-
   db.query(projectQuery, [projectName], (err, projectRows) => {
 
     if (err) {
@@ -1894,18 +2013,57 @@ app.get('/api/dashboard/quality-data/:projectName', (req, res) => {
 
     // STEP 2: Get quality data
     const query = `
-      SELECT
-        b.platform_type,
-        b.chassis_sn,
-        bf.failure_mode,
-        bf.failure_category
-      FROM builds b
-      LEFT JOIN build_failures bf ON b.chassis_sn = bf.chassis_sn
-      WHERE b.project_name = ?
-        AND (UPPER(b.platform_type) LIKE '%PRB%' OR UPPER(b.platform_type) LIKE '%VRB%')
+     SELECT *
+      FROM (
+        SELECT
+          b.platform_type,
+          b.chassis_sn,
+          bf.failure_mode,
+          bf.failure_category
+        FROM builds b
+        LEFT JOIN build_failures bf 
+          ON b.chassis_sn = bf.chassis_sn
+        WHERE b.project_name = ?
+          AND (UPPER(b.platform_type) LIKE '%PRB%' OR UPPER(b.platform_type) LIKE '%VRB%')
+
+        UNION ALL
+
+        SELECT
+          b.platform_type,
+          rh.chassis_sn,
+          rf.failure_mode,
+          rf.failure_category
+        FROM rework_history rh
+        JOIN rework_failures rf ON rh.id = rf.rework_id
+        JOIN builds b ON b.chassis_sn = rh.chassis_sn
+        WHERE b.project_name = ?
+          AND (UPPER(b.platform_type) LIKE '%PRB%' OR UPPER(b.platform_type) LIKE '%VRB%')
+      ) combined
+      WHERE
+        failure_mode IS NOT NULL
+        OR NOT EXISTS (
+          SELECT 1
+          FROM (
+            SELECT
+              b.chassis_sn,
+              bf.failure_mode
+            FROM builds b
+            LEFT JOIN build_failures bf ON b.chassis_sn = bf.chassis_sn
+
+            UNION ALL
+
+            SELECT
+              rh.chassis_sn,
+              rf.failure_mode
+            FROM rework_history rh
+            JOIN rework_failures rf ON rh.id = rf.rework_id
+          ) t2
+          WHERE t2.chassis_sn = combined.chassis_sn
+            AND t2.failure_mode IS NOT NULL
+        )
     `;
 
-    db.query(query, [projectId], (err, results) => {
+    db.query(query, [projectId, projectId], (err, results) => {
 
       if (err) {
         console.error('Error fetching quality data:', err);
@@ -4122,7 +4280,7 @@ app.get('/api/rma/:chassisSN', async (req, res) => {
       [chassisSN]
     );
 
-    res.json(rows[0] || null);
+    res.json(rows || null);
   } catch (error) {
     console.error('Error fetching rework:', error);
     res.status(500).json({ error: 'Database error' });
@@ -5820,10 +5978,11 @@ app.post('/api/search-builds', (req, res) => {
     const conditions = filters.changegearAssetId
       .map(() => 'mb.changegear_asset_id = ?')
       .join(' OR ');
-  
+
     query += ` AND (${conditions})`;
     params.push(...filters.changegearAssetId);
   }
+
 
   if (filters.masterStatus) {
     query += ' AND mb.master_status = ?';
@@ -5967,6 +6126,212 @@ app.get('/api/customer-escalations', (req, res) => {
     }
 
     res.json(results);
+  });
+});
+
+app.post("/api/waiver/draft", (req, res) => {
+  const { userId,
+    formData,
+    materialRows,
+    processData,
+    testData,
+    specData,
+    reworkData,
+    labelData,
+    openSection } = req.body;
+
+  console.log("Incoming body qq:", req.body);
+
+  const sql = `
+     INSERT INTO waiver_drafts (
+    user_id,
+    form_data,
+    material_rows,
+    process_data,
+    test_data,
+    spec_data,
+    rework_data,
+    label_data,
+    open_section
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON DUPLICATE KEY UPDATE
+    form_data = VALUES(form_data),
+    material_rows = VALUES(material_rows),
+    process_data = VALUES(process_data),
+    test_data = VALUES(test_data),
+    spec_data = VALUES(spec_data),
+    rework_data = VALUES(rework_data),
+    label_data = VALUES(label_data),
+    open_section = VALUES(open_section),
+    updated_at = CURRENT_TIMESTAMP
+`;
+
+  db.query(
+    sql,
+    [
+      userId,
+      JSON.stringify(formData ?? {}),
+      JSON.stringify(materialRows ?? []),
+      JSON.stringify(processData ?? {}),
+      JSON.stringify(testData ?? {}),
+      JSON.stringify(specData ?? {}),
+      JSON.stringify(reworkData ?? {}),
+      JSON.stringify(labelData ?? {}),
+      JSON.stringify(openSection ?? [])
+    ],
+    (err) => {
+      if (err) {
+        console.error("Save draft error:", err);
+        return res.status(500).json({ error: "Failed to save draft" });
+      }
+
+      res.json({ success: true });
+    }
+  );
+});
+
+
+app.get('/api/platform', (req, res) => {
+  const query = `
+    SELECT system_pn, platform_type
+    FROM platform_info
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching platform info:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+
+    res.json(results);
+  });
+});
+
+// POST /api/projects
+app.post('/api/addprojects', async (req, res) => {
+  const { project_name } = req.body;
+
+  if (!project_name || !project_name.trim()) {
+    return res.status(400).json({ error: 'Project name is required' });
+  }
+
+  const trimmed = project_name.trim();
+
+  try {
+    const conn = db.promise();
+
+    // ✅ Optional: prevent duplicates
+    const [existing] = await conn.execute(
+      'SELECT id FROM project_name WHERE project_name = ?',
+      [trimmed]
+    );
+
+    if (existing.length > 0) {
+      return res.status(400).json({ error: 'Project already exists' });
+    }
+
+    // ✅ Insert new project
+    await conn.execute(
+      'INSERT INTO project_name (project_name) VALUES (?)',
+      [trimmed]
+    );
+
+    res.json({ success: true, project_name: trimmed });
+
+  } catch (err) {
+    console.error('Add project error:', err);
+    res.status(500).json({ error: 'Failed to add project' });
+  }
+});
+
+
+
+app.get("/api/waiver/draft/:userId", (req, res) => {
+  const { userId } = req.params;
+
+  const sql = `
+    SELECT *
+    FROM waiver_drafts
+    WHERE user_id = ?
+  `;
+
+  db.query(sql, [userId], (err, rows) => {
+    if (err) {
+      console.error("Draft fetch error:", err);
+      return res.status(500).json({ error: "Failed to fetch draft" });
+    }
+
+    console.log("📦 DB rows:", rows[0].material_rows);
+    if (!rows || rows.length === 0) {
+      return res.json({
+        formData: null,
+        materialRows: null,
+        openSection: []
+      });
+    }
+
+    const row = rows[0];
+
+    const safeParse = (val, fallback) => {
+      try {
+        if (!val) return fallback;
+
+        // already object (mysql2 sometimes does this)
+        if (typeof val === "object") return val;
+
+        return JSON.parse(val);
+      } catch (e) {
+        console.warn("JSON parse failed:", val);
+        return fallback;
+      }
+    };
+
+    return res.json({
+      formData: safeParse(row.form_data, null),
+      materialRows: safeParse(row.material_rows, null),
+      processData: safeParse(row.process_data, null),
+      testData: safeParse(row.test_data, null),
+      specData: safeParse(row.spec_data, null),
+      reworkData: safeParse(row.rework_data, null),
+      labelData: safeParse(row.label_data, null),
+      openSection: safeParse(row.open_section, [])
+    });
+  });
+});
+
+app.post("/api/delete-draft-file", (req, res) => {
+  const fs = require("fs");
+  const path = require("path");
+
+  const { filePath } = req.body;
+
+  if (!filePath) {
+    return res.status(400).json({ error: "No file path" });
+  }
+
+  // 🔥 extract ONLY filename (safe)
+  const fileName = path.basename(filePath);
+
+  // 🔥 rebuild correct server path
+  const fullPath = path.join(__dirname, "drafts", fileName);
+
+  console.log("📂 Deleting file:", fullPath);
+
+  // optional safety check
+  if (!fs.existsSync(fullPath)) {
+    console.warn("⚠️ File already missing:", fullPath);
+    return res.json({ success: true, warning: "File already deleted" });
+  }
+
+  fs.unlink(fullPath, (err) => {
+    if (err) {
+      console.error("❌ Delete failed:", err);
+      return res.status(500).json({ error: "Delete failed" });
+    }
+
+    console.log("✅ Deleted:", fullPath);
+    return res.json({ success: true });
   });
 });
 
@@ -6810,6 +7175,23 @@ app.get('/api/photo/:type/:filename', (req, res) => {
 
   res.sendFile(filePath);
 });
+
+
+app.get('/api/changegear/template/download', (req, res) => {
+  const filePath = path.resolve(
+    __dirname,
+    'templates',
+    'Changegear Asset ID import.xlsx'
+  );
+
+  res.download(filePath, 'Changegear_Asset_ID_Template.xlsx', (err) => {
+    if (err) {
+      console.error('Download error:', err);
+      res.status(500).send('Error downloading template');
+    }
+  });
+});
+
 
 // Debug endpoint to list all photos for a build
 app.get('/api/debug/photos/:chassisSN', (req, res) => {

@@ -166,7 +166,7 @@ const createOrUpdateUser = async (user) => {
       'tzesngee@amd.com',
       'TzeShik.Ngee@amd.com',
       'ErnQi.Poh@amd.com',
-       'epoh@amd.com'
+      'epoh@amd.com'
     ];
     const allAdminEmails = [...adminEmailsFromEnv, ...hardcodedAdminEmails.map(email => email.toLowerCase())];
     const isHardcodedSystemAdmin = allAdminEmails.includes(user.email.toLowerCase());
@@ -627,6 +627,8 @@ router.get('/debug/test-profile-data', (req, res) => {
  * GET /auth/okta
  * Initiate Okta OIDC authentication
  */
+//original okta flow uncomment this in production
+/*
 router.get('/auth/okta', (req, res, next) => {
   console.log('=== Okta Auth Initiation ===');
   console.log('OKTA_ISSUER:', process.env.OKTA_ISSUER);
@@ -646,6 +648,77 @@ router.get('/auth/okta', (req, res, next) => {
     }
     
     // Continue with normal passport flow
+    next();
+  })(req, res, next);
+}, passport.authenticate('okta'));
+*/
+
+router.get('/auth/okta', async (req, res, next) => {
+  // Development bypass: skip Okta entirely and simulate a successful login
+  if (process.env.NODE_ENV === 'development') {
+    console.log('=== DEV AUTH BYPASS: Skipping Okta ===');
+    try {
+      const devUser = {
+        okta_user_id: '00uz286ii7At9gy12697',
+        email: 'ErnQi.Poh@amd.com',
+        full_name: 'ERN QI POH',
+        first_name: 'ERN QI',
+        last_name: 'POH',
+        department: 'Systems Design Eng',
+        location: 'Penang',
+        employee_number: '50107019',
+        cost_center_number: '7286022',
+        role: 'admin',
+        category: 'cat4',
+        raw_profile: {}
+      };
+
+      const savedUser = await createOrUpdateUser(devUser);
+      const token = generateJWT(savedUser);
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+      return res.redirect(`${frontendUrl}/auth/callback?token=${token}&user=${encodeURIComponent(JSON.stringify({
+        user_id: savedUser.user_id,
+        okta_user_id: savedUser.okta_user_id,
+        email: savedUser.email,
+        full_name: savedUser.full_name,
+        first_name: savedUser.first_name,
+        last_name: savedUser.last_name,
+        department: savedUser.department,
+        location: savedUser.location,
+        employee_number: savedUser.employee_number,
+        cost_center_number: savedUser.cost_center_number,
+        role: savedUser.role,
+        category: savedUser.category,
+        permissions: savedUser.permissions,
+        status: savedUser.status,
+        last_login: savedUser.last_login,
+        created_at: savedUser.created_at,
+        updated_at: savedUser.updated_at
+      }))}`);
+    } catch (err) {
+      console.error('Dev auth bypass failed:', err);
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/login?error=dev_bypass_failed`);
+    }
+  }
+
+  // Production: real Okta OIDC flow
+  console.log('=== Okta Auth Initiation ===');
+  console.log('OKTA_ISSUER:', process.env.OKTA_ISSUER);
+  console.log('OKTA_CLIENT_ID:', process.env.OKTA_CLIENT_ID);
+  console.log('OKTA_CALLBACK_URL:', process.env.OKTA_CALLBACK_URL);
+
+  passport.authenticate('okta', (err, user, info) => {
+    if (err) {
+      console.error('Passport auth error:', err);
+      return res.status(500).json({ error: 'Authentication initialization failed', details: err.message });
+    }
+
+    if (!user && info) {
+      console.error('Auth info:', info);
+      return res.status(400).json({ error: 'Authentication failed', details: info });
+    }
+
     next();
   })(req, res, next);
 }, passport.authenticate('okta'));

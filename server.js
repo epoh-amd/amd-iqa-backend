@@ -738,8 +738,6 @@ app.put('/api/builds/bulk-update', async (req, res) => {
   try {
     const conn = db.promise();
 
-
-
     for (const chassis_sn in updates) {
       const row = updates[chassis_sn];
 
@@ -794,9 +792,24 @@ app.put('/api/builds/bulk-update', async (req, res) => {
         }
       }
 
+      // ✅ Auto-update platform_type when system_pn changes
+      if (row.system_pn !== undefined) {
+        const [piRows] = await conn.execute(
+          'SELECT platform_type FROM platform_info WHERE system_pn = ?',
+          [row.system_pn]
+        );
+
+        if (piRows.length > 0) {
+          row.platform_type = piRows[0].platform_type;
+        } else {
+          throw new Error(`System PN "${row.system_pn}" not found in platform_info`);
+        }
+      }
+
       const allowedFields = [
         'location',
         'system_pn',
+        'platform_type',
         'po',
         'bmc_mac',
         'mb_sn',
@@ -3000,6 +3013,122 @@ ORDER BY b.updated_at DESC;
   });
 });
 
+//search builds for rma only
+app.post('/api/builds/search-for-edit-rma', (req, res) => {
+  const { bmcNames, chassisSNs, jiraTickets } = req.body;
+
+  console.log('Searching builds for edit:', { bmcNames, chassisSNs, jiraTickets });
+
+  // Build WHERE clause dynamically
+  const whereClauses = [];
+  const queryParams = [];
+
+  if (bmcNames && bmcNames.length > 0) {
+    const placeholders = bmcNames.map(() => '?').join(',');
+    whereClauses.push(`b.bmc_name IN (${placeholders})`);
+    queryParams.push(...bmcNames);
+  }
+
+  if (chassisSNs && chassisSNs.length > 0) {
+    const likeConditions = chassisSNs.map(() => `b.chassis_sn LIKE CONCAT('%', ?)`).join(' OR ');
+    whereClauses.push(`(${likeConditions})`);
+    queryParams.push(...chassisSNs);
+  }
+
+  if (jiraTickets && jiraTickets.length > 0) {
+    const placeholders = jiraTickets.map(() => '?').join(',');
+    whereClauses.push(`b.jira_ticket_no IN (${placeholders})`);
+    queryParams.push(...jiraTickets);
+  }
+
+  if (whereClauses.length === 0) {
+    return res.status(400).json({ error: 'At least one BMC Name, jira Ticket No. or Chassis S/N is required' });
+  }
+
+  const whereClause = whereClauses.join(' OR ');
+
+  const query = `
+    SELECT 
+    b.chassis_sn,
+    b.jira_ticket_no,
+    b.location,
+    b.build_engineer,
+    b.is_custom_config,
+    pn.project_name AS project_name,
+    b.system_pn,
+    b.platform_type,
+    b.manufacturer,
+    b.chassis_type,
+    b.bmc_name,
+    b.mb_sn,
+    b.ethernet_mac,
+    b.cpu_socket,
+    b.cpu_vendor,
+    b.cpu_p0_sn,
+    b.cpu_p0_socket_date_code,
+    b.cpu_p1_sn,
+    b.cpu_p1_socket_date_code,
+    b.cpu_program_name,
+    b.m2_pn,
+    b.m2_sn,
+    b.dimm_pn,
+    b.dimm_qty,
+    b.visual_inspection_status,
+    b.visual_inspection_notes,
+    b.boot_status,
+    b.boot_notes,
+    b.dimms_detected_status,
+    b.dimms_detected_notes,
+    b.lom_working_status,
+    b.lom_working_notes,
+    b.fpy_status,
+    b.can_continue,
+    b.status,
+    b.created_at,
+    b.updated_at,
+    b.bios_version,
+    b.bmc_version,
+    b.scm_fpga_version,
+    b.hpm_fpga_version,
+    b.problem_description,
+    b.bmc_mac,
+
+    GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') AS dimm_sns
+
+FROM builds b
+
+LEFT JOIN project_name pn 
+    ON b.project_name = pn.id
+
+LEFT JOIN dimm_serial_numbers d 
+    ON b.chassis_sn = d.chassis_sn
+
+WHERE ${whereClause}
+
+GROUP BY b.chassis_sn
+
+ORDER BY b.updated_at DESC;
+  `;
+
+  dbQuery(query, queryParams, (err, results) => {
+    if (err) {
+      console.error('Error searching builds for edit:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+
+    console.log(`Found ${results.length} builds matching search criteria`);
+
+    // Process results
+    results.forEach(build => {
+      build.dimmSNs = build.dimm_sns ? build.dimm_sns.split(',') : [];
+      delete build.dimm_sns;
+    });
+
+    res.json(results);
+  });
+});
+
+
 /**
  * PUT /api/builds/:chassisSN/edit
  *
@@ -4079,6 +4208,334 @@ app.post('/api/builds', async (req, res) => {
     }
   }
 });
+
+
+// GET /api/waiver-config — return all config keys
+app.get('/api/waiver-config', async (req, res) => {
+  let connection;
+  try {
+    connection = await db.promise().getConnection();
+
+    const [rows] = await connection.query(
+      'SELECT config_key, config_value FROM waiver_config'
+    );
+
+    // Convert rows array into a flat object: { subcontractors: [...], ... }
+    const config = {};
+    for (const row of rows) {
+      config[row.config_key] = row.config_value;
+    }
+
+    res.json(config);
+
+  } catch (error) {
+    console.error('Error fetching waiver config:', error);
+    res.status(500).json({ error: 'Failed to fetch waiver config', message: error.message });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+
+// POST /api/waiver-config — upsert a single config key
+app.post('/api/waiver-config-save', async (req, res) => {
+  const { key, value } = req.body;
+
+  if (!key || !Array.isArray(value)) {
+    return res.status(400).json({ error: 'key (string) and value (array) are required' });
+  }
+
+  const allowedKeys = ['notifiers', 'approvers', 'subcontractors', 'assemblyLevels', 'materialActions'];
+  if (!allowedKeys.includes(key)) {
+    return res.status(400).json({ error: `Invalid config key: ${key}` });
+  }
+
+  let connection;
+  try {
+    connection = await db.promise().getConnection();
+
+    await connection.execute(
+      `INSERT INTO waiver_config (config_key, config_value)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), updated_at = CURRENT_TIMESTAMP`,
+      [key, JSON.stringify(value)]
+    );
+
+    res.json({ success: true, message: `Config '${key}' saved successfully` });
+
+  } catch (error) {
+    console.error('Error saving waiver config:', error);
+    res.status(500).json({ error: 'Failed to save waiver config', message: error.message });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// GET pending waivers for approval
+app.get('/api/waivers/pending', async (req, res) => {
+  let connection;
+  try {
+    connection = await db.promise().getConnection();
+    const [rows] = await connection.query(
+      `SELECT waiver_id, part_number, submitted_by, submitted_at
+       FROM waivers WHERE status = 'Pending'
+       ORDER BY submitted_at DESC`
+    );
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch pending waivers', message: error.message });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+// PATCH waiver status (Approved / Rejected / Cancelled)
+app.patch('/api/waivers/:waiverId/status', async (req, res) => {
+  const { waiverId } = req.params;
+  const { status, reason } = req.body;
+
+  const allowed = ['Approved', 'Rejected', 'Cancelled'];
+  if (!allowed.includes(status)) {
+    return res.status(400).json({ error: `Invalid status: ${status}` });
+  }
+
+  let connection;
+  try {
+    connection = await db.promise().getConnection();
+    await connection.execute(
+      `UPDATE waivers SET status = ?, cancel_reason = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE waiver_id = ?`,
+      [status, reason || null, waiverId]
+    );
+    res.json({ success: true, waiverId, status });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update waiver status', message: error.message });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+
+// DELETE /api/waivers/:waiverId — delete a waiver and all its related rows
+app.delete("/api/waivers/:waiverId", async (req, res) => {
+  const { waiverId } = req.params;
+
+  if (!waiverId) {
+    return res.status(400).json({ error: "waiverId is required" });
+  }
+
+  let connection;
+  try {
+    connection = await db.promise().getConnection();
+
+    const [result] = await connection.execute(
+      "DELETE FROM waiver_drafts WHERE waiver_id = ?",
+      [waiverId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: `Waiver ${waiverId} not found` });
+    }
+
+    res.json({ success: true, message: `Waiver ${waiverId} deleted` });
+
+  } catch (error) {
+    console.error("Error deleting waiver:", error);
+    res.status(500).json({ error: "Failed to delete waiver", message: error.message });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+
+
+app.post('/api/waivers/submit', async (req, res) => {
+  const {
+    waiverId, partNumber, revision, description, subcontractor,
+    assemblyLevel, requestor, startDate, endDate, waiverType,
+    reason, workorder, workorderQty, submittedBy,
+    materialRows, processData, testData, specData, reworkData, labelData, openSections
+  } = req.body;
+
+  if (!waiverId) {
+    return res.status(400).json({ error: 'waiverId is required' });
+  }
+
+  let connection;
+  try {
+    connection = await db.promise().getConnection();
+    await connection.beginTransaction();
+
+    // 1. Insert main waiver record
+    await connection.execute(
+      `INSERT INTO waivers 
+        (waiver_id, part_number, revision, description, subcontractor,
+         assembly_level, requestor, start_date, end_date, waiver_type,
+         reason, workorder, workorder_qty, status, submitted_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?)
+       ON DUPLICATE KEY UPDATE
+         part_number    = VALUES(part_number),
+         revision       = VALUES(revision),
+         description    = VALUES(description),
+         subcontractor  = VALUES(subcontractor),
+         assembly_level = VALUES(assembly_level),
+         requestor      = VALUES(requestor),
+         start_date     = VALUES(start_date),
+         end_date       = VALUES(end_date),
+         waiver_type    = VALUES(waiver_type),
+         reason         = VALUES(reason),
+         workorder      = VALUES(workorder),
+         workorder_qty  = VALUES(workorder_qty),
+         submitted_by   = VALUES(submitted_by),
+         updated_at     = CURRENT_TIMESTAMP`,
+      [
+        waiverId, partNumber, revision, description, subcontractor,
+        assemblyLevel, requestor, startDate || null, endDate || null,
+        JSON.stringify(waiverType || []),
+        reason, workorder, workorderQty || null, submittedBy
+      ]
+    );
+
+    // 2. Insert material rows
+    if (materialRows && materialRows.length > 0) {
+      await connection.execute(
+        'DELETE FROM waiver_material_rows WHERE waiver_id = ?', [waiverId]
+      );
+      for (let i = 0; i < materialRows.length; i++) {
+        const r = materialRows[i];
+        await connection.execute(
+          `INSERT INTO waiver_material_rows
+             (waiver_id, sort_order, current_part, current_part_description,
+              new_part, new_part_description, action, instructions, file_path)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            waiverId, i,
+            r.currentPart || null, r.currentPartDescription || null,
+            r.newPart || null, r.newPartDescription || null,
+            r.action || null, r.instructions || null, r.file || null
+          ]
+        );
+      }
+    }
+
+    // 3. Insert sections
+    const sections = [
+      { type: 'process', data: processData, extra: null },
+      { type: 'test',    data: testData,    extra: JSON.stringify({ currentPart: testData?.currentPart, toBePart: testData?.toBePart }) },
+      { type: 'spec',    data: specData,    extra: JSON.stringify({ specImpact: specData?.specImpact }) },
+      { type: 'rework',  data: reworkData,  extra: null },
+      { type: 'label',   data: labelData,   extra: null },
+    ];
+
+    for (const section of sections) {
+      if (!section.data) continue;
+      await connection.execute(
+        `INSERT INTO waiver_sections
+           (waiver_id, section_type, instructions, extra_data, file_path_1, file_path_2)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           instructions = VALUES(instructions),
+           extra_data   = VALUES(extra_data),
+           file_path_1  = VALUES(file_path_1),
+           file_path_2  = VALUES(file_path_2)`,
+        [
+          waiverId,
+          section.type,
+          section.data.instructions || null,
+          section.extra,
+          section.data.file  || section.data.file1 || null,
+          section.data.file2 || null
+        ]
+      );
+    }
+
+    await connection.commit();
+
+    res.json({ success: true, message: 'Waiver submitted successfully', waiverId });
+
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error('Error submitting waiver:', error);
+    res.status(500).json({ error: 'Failed to submit waiver', message: error.message });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+
+app.get('/api/waiver/details/:waiverId', async (req, res) => {
+  const { waiverId } = req.params;
+  let connection;
+
+  const safeParse = (val, fallback) =>
+    typeof val === 'string' ? JSON.parse(val || JSON.stringify(fallback)) : (val ?? fallback);
+
+  try {
+    connection = await db.promise().getConnection();
+
+    const [rows] = await connection.query(
+      'SELECT * FROM waivers WHERE waiver_id = ?', [waiverId]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    const waiver = rows[0];
+
+    const [materialRows] = await connection.query(
+      'SELECT * FROM waiver_material_rows WHERE waiver_id = ? ORDER BY sort_order',
+      [waiverId]
+    );
+
+    const [sections] = await connection.query(
+      'SELECT * FROM waiver_sections WHERE waiver_id = ?', [waiverId]
+    );
+
+    const sectionMap = {};
+    for (const s of sections) {
+      sectionMap[s.section_type] = {
+        instructions: s.instructions,
+        file:  s.file_path_1,
+        file2: s.file_path_2,
+        ...safeParse(s.extra_data, {})
+      };
+    }
+
+const responseData = {
+  waiverId: waiver.waiver_id,
+  partNumber: waiver.part_number,
+  revision: waiver.revision,
+  description: waiver.description,
+  subcontractor: waiver.subcontractor,
+  assemblyLevel: waiver.assembly_level,
+  requestor: waiver.requestor,
+  startDate: waiver.start_date,
+  endDate: waiver.end_date,
+  waiverType: safeParse(waiver.waiver_type, []),
+  reason: waiver.reason,
+  workorder: waiver.workorder,
+  workorderQty: waiver.workorder_qty,
+  status: waiver.status,
+  submittedBy: waiver.submitted_by,
+  materialRows,
+  processData: sectionMap['process'] || {},
+  testData: sectionMap['test'] || {},
+  specData: sectionMap['spec'] || {},
+  reworkData: sectionMap['rework'] || {},
+  labelData: sectionMap['label'] || {},
+};
+
+console.log('Response Data:');
+console.dir(responseData, { depth: null });
+
+res.json(responseData);
+
+  } catch (err) {
+    console.error('Error fetching waiver details:', err);
+    res.status(500).json({ error: 'Server error' });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
+
 
 /**
  * GET /api/builds/:chassisSN
@@ -6129,6 +6586,30 @@ app.get('/api/customer-escalations', (req, res) => {
   });
 });
 
+
+// GET all drafts for a user
+app.get("/api/waiver/drafts/:userId", (req, res) => {
+  const { userId } = req.params;
+
+  const sql = `
+    SELECT
+      waiver_id,
+      JSON_UNQUOTE(JSON_EXTRACT(form_data, '$.partNumber')) AS part_number,
+      updated_at
+    FROM waiver_drafts
+    WHERE user_id = ?
+    ORDER BY updated_at DESC
+  `;
+
+  db.query(sql, [userId], (err, rows) => {
+    if (err) {
+      console.error("Drafts list error:", err);
+      return res.status(500).json({ error: "Failed to fetch drafts" });
+    }
+    return res.json(rows || []);
+  });
+});
+
 app.post("/api/waiver/draft", (req, res) => {
   const { userId,
     formData,
@@ -6141,10 +6622,12 @@ app.post("/api/waiver/draft", (req, res) => {
     openSection } = req.body;
 
   console.log("Incoming body qq:", req.body);
+  const waiverId = formData?.waiverId || null;
 
   const sql = `
      INSERT INTO waiver_drafts (
     user_id,
+    waiver_id,
     form_data,
     material_rows,
     process_data,
@@ -6154,7 +6637,7 @@ app.post("/api/waiver/draft", (req, res) => {
     label_data,
     open_section
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON DUPLICATE KEY UPDATE
     form_data = VALUES(form_data),
     material_rows = VALUES(material_rows),
@@ -6171,6 +6654,7 @@ app.post("/api/waiver/draft", (req, res) => {
     sql,
     [
       userId,
+      waiverId,
       JSON.stringify(formData ?? {}),
       JSON.stringify(materialRows ?? []),
       JSON.stringify(processData ?? {}),
@@ -6247,22 +6731,18 @@ app.post('/api/addprojects', async (req, res) => {
 
 
 
-app.get("/api/waiver/draft/:userId", (req, res) => {
-  const { userId } = req.params;
+// GET single draft by userId + waiverId
+app.get("/api/waiver/draft/:userId/:waiverId", (req, res) => {
+  const { userId, waiverId } = req.params;
 
-  const sql = `
-    SELECT *
-    FROM waiver_drafts
-    WHERE user_id = ?
-  `;
+  const sql = `SELECT * FROM waiver_drafts WHERE user_id = ? AND waiver_id = ?`;
 
-  db.query(sql, [userId], (err, rows) => {
+  db.query(sql, [userId, waiverId], (err, rows) => {
     if (err) {
       console.error("Draft fetch error:", err);
       return res.status(500).json({ error: "Failed to fetch draft" });
     }
 
-    console.log("📦 DB rows:", rows[0].material_rows);
     if (!rows || rows.length === 0) {
       return res.json({
         formData: null,
@@ -6276,10 +6756,7 @@ app.get("/api/waiver/draft/:userId", (req, res) => {
     const safeParse = (val, fallback) => {
       try {
         if (!val) return fallback;
-
-        // already object (mysql2 sometimes does this)
         if (typeof val === "object") return val;
-
         return JSON.parse(val);
       } catch (e) {
         console.warn("JSON parse failed:", val);
@@ -6288,17 +6765,19 @@ app.get("/api/waiver/draft/:userId", (req, res) => {
     };
 
     return res.json({
-      formData: safeParse(row.form_data, null),
-      materialRows: safeParse(row.material_rows, null),
-      processData: safeParse(row.process_data, null),
-      testData: safeParse(row.test_data, null),
-      specData: safeParse(row.spec_data, null),
-      reworkData: safeParse(row.rework_data, null),
-      labelData: safeParse(row.label_data, null),
-      openSection: safeParse(row.open_section, [])
+      formData:     safeParse(row.form_data,     null),
+      materialRows: safeParse(row.material_rows,  null),
+      processData:  safeParse(row.process_data,   null),
+      testData:     safeParse(row.test_data,      null),
+      specData:     safeParse(row.spec_data,      null),
+      reworkData:   safeParse(row.rework_data,    null),
+      labelData:    safeParse(row.label_data,     null),
+      openSection:  safeParse(row.open_section,   [])
     });
   });
 });
+
+
 
 app.post("/api/delete-draft-file", (req, res) => {
   const fs = require("fs");

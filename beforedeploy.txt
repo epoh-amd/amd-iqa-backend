@@ -140,3 +140,116 @@ ADD test_data JSON,
 ADD spec_data JSON,
 ADD rework_data JSON,
 ADD label_data JSON;
+
+
+CREATE TABLE waiver_config (
+  config_key   VARCHAR(50)  PRIMARY KEY,
+  config_value JSON         NOT NULL,
+  updated_at   TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Seed default values
+INSERT INTO waiver_config (config_key, config_value) VALUES
+  ('notifiers',       '[]'),
+  ('approvers',       '[]'),
+  ('subcontractors',  '["Sanmina","Flex","Pegatron","Lenovo","Compal"]'),
+  ('assemblyLevels',  '["Board","Sub-Assembly","System"]'),
+  ('materialActions', '["Material Substitution","Use-as-is","Rework","Remove","Scrap"]');
+
+
+  -- ============================================================
+-- 1. Main waiver record
+-- ============================================================
+CREATE TABLE waivers (
+  id               INT           PRIMARY KEY AUTO_INCREMENT,
+  waiver_id        VARCHAR(20)   NOT NULL UNIQUE,        -- e.g. WV26001-A
+  part_number      VARCHAR(100),
+  revision         VARCHAR(50),
+  description      VARCHAR(255),
+  subcontractor    VARCHAR(100),
+  assembly_level   VARCHAR(50),
+  requestor        VARCHAR(100),
+  start_date       DATE,
+  end_date         DATE,
+  waiver_type      JSON,                                  -- ["Material Waiver","Process Waiver"]
+  reason           TEXT,
+  workorder        VARCHAR(100),
+  workorder_qty    INT,
+  status           ENUM('Pending','Approved','Rejected','Partially Approved')
+                   DEFAULT 'Pending',
+  submitted_by     VARCHAR(100),
+  submitted_at     TIMESTAMP     DEFAULT CURRENT_TIMESTAMP,
+  updated_at       TIMESTAMP     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+
+-- ============================================================
+-- 2. Material waiver rows
+-- ============================================================
+CREATE TABLE waiver_material_rows (
+  id                        INT          PRIMARY KEY AUTO_INCREMENT,
+  waiver_id                 VARCHAR(20)  NOT NULL,
+  sort_order                INT          DEFAULT 0,
+  current_part              VARCHAR(100),
+  current_part_description  TEXT,
+  new_part                  VARCHAR(100),
+  new_part_description      TEXT,
+  action                    VARCHAR(100),
+  instructions              TEXT,
+  file_path                 VARCHAR(500),
+  FOREIGN KEY (waiver_id) REFERENCES waivers(waiver_id) ON DELETE CASCADE
+);
+
+
+-- ============================================================
+-- 3. Section data (process / test / spec / rework / label)
+-- ============================================================
+CREATE TABLE waiver_sections (
+  id            INT          PRIMARY KEY AUTO_INCREMENT,
+  waiver_id     VARCHAR(20)  NOT NULL,
+  section_type  ENUM('process','test','spec','rework','label') NOT NULL,
+  instructions  TEXT,
+  extra_data    JSON,        -- test: {currentPart, toBePart}  spec: {specImpact}
+  file_path_1   VARCHAR(500),
+  file_path_2   VARCHAR(500),
+  UNIQUE KEY uq_waiver_section (waiver_id, section_type),
+  FOREIGN KEY (waiver_id) REFERENCES waivers(waiver_id) ON DELETE CASCADE
+);
+
+
+-- ============================================================
+-- 4. Approvals  — one row per approver per waiver
+--    token is used in the approve/reject href link
+-- ============================================================
+CREATE TABLE waiver_approvals (
+  id             INT          PRIMARY KEY AUTO_INCREMENT,
+  waiver_id      VARCHAR(20)  NOT NULL,
+  approver_email VARCHAR(150) NOT NULL,
+  token          VARCHAR(64)  NOT NULL UNIQUE,   -- UUID, used in email link
+  status         ENUM('Pending','Approved','Rejected') DEFAULT 'Pending',
+  comment        TEXT,
+  decided_at     TIMESTAMP    NULL,
+  notified_at    TIMESTAMP    NULL,              -- when the email was sent
+  FOREIGN KEY (waiver_id) REFERENCES waivers(waiver_id) ON DELETE CASCADE
+);
+
+
+-- ============================================================
+-- 5. Notifiers — one row per notifier per waiver
+-- ============================================================
+CREATE TABLE waiver_notifiers (
+  id            INT          PRIMARY KEY AUTO_INCREMENT,
+  waiver_id     VARCHAR(20)  NOT NULL,
+  email         VARCHAR(150) NOT NULL,
+  notified_at   TIMESTAMP    NULL,              -- when the email was sent
+  FOREIGN KEY (waiver_id) REFERENCES waivers(waiver_id) ON DELETE CASCADE
+);
+
+
+ALTER TABLE waiver_drafts
+ADD COLUMN waiver_id VARCHAR(100) UNIQUE;
+
+ALTER TABLE waiver_drafts
+DROP INDEX user_id;
+
+ALTER TABLE waivers ADD COLUMN cancel_reason TEXT NULL;

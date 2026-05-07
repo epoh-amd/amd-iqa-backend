@@ -740,21 +740,25 @@ app.put('/api/builds/bulk-update', async (req, res) => {
 
     for (const chassis_sn in updates) {
       const row = updates[chassis_sn];
-
       const fields = [];
       const values = [];
-
       let generatedBMC = null;
       let manufacturerName = null;
-
       let projectNameId = null;
 
+      // 1. Fetch current build state once
+      const [currentRows] = await conn.execute(
+        'SELECT platform_type FROM builds WHERE chassis_sn = ?',
+        [chassis_sn]
+      );
+      const currentPlatformType = currentRows[0]?.platform_type || null;
+
+      // 2. Resolve project_name → id
       if (row.project_name !== undefined) {
         const [pRows] = await conn.execute(
           'SELECT id FROM project_name WHERE project_name = ?',
           [row.project_name]
         );
-
         if (pRows.length > 0) {
           projectNameId = pRows[0].id;
         } else {
@@ -762,43 +766,12 @@ app.put('/api/builds/bulk-update', async (req, res) => {
         }
       }
 
-      // ✅ Only trigger when chassis_sn changes
-      if (row.chassis_sn !== undefined && row.chassis_sn !== chassis_sn) {
-
-        // 1. Get existing platform_type
-        const [rows] = await conn.execute(
-          'SELECT platform_type FROM builds WHERE chassis_sn = ?',
-          [chassis_sn]
-        );
-
-        const platformType = rows[0]?.platform_type;
-
-        if (platformType) {
-          // 2. Generate BMC name
-          generatedBMC = generateBMCName(platformType, row.chassis_sn);
-
-          // 3. Extract prefix from BMC name
-          const prefix = extractPrefixFromBMC(generatedBMC);
-
-          // 4. Lookup manufacturer
-          const [mRows] = await conn.execute(
-            'SELECT manufacturer_name FROM manufacturers WHERE platform_prefix = ?',
-            [prefix]
-          );
-
-          if (mRows.length > 0) {
-            manufacturerName = mRows[0].manufacturer_name;
-          }
-        }
-      }
-
-      // ✅ Auto-update platform_type when system_pn changes
+      // 3. Resolve system_pn → platform_type (must run BEFORE BMC logic)
       if (row.system_pn !== undefined) {
         const [piRows] = await conn.execute(
           'SELECT platform_type FROM platform_info WHERE system_pn = ?',
           [row.system_pn]
         );
-
         if (piRows.length > 0) {
           row.platform_type = piRows[0].platform_type;
         } else {
@@ -806,37 +779,33 @@ app.put('/api/builds/bulk-update', async (req, res) => {
         }
       }
 
+      // 4. Regenerate BMC if chassis_sn OR platform_type changed
+      const effectivePlatformType = row.platform_type || currentPlatformType;
+      const effectiveChassisSN = row.chassis_sn !== undefined ? row.chassis_sn : chassis_sn;
+      const chassisSNChanged = row.chassis_sn !== undefined && row.chassis_sn !== chassis_sn;
+      const platformTypeChanged = row.platform_type !== undefined && row.platform_type !== currentPlatformType;
+
+      if ((chassisSNChanged || platformTypeChanged) && effectivePlatformType) {
+        generatedBMC = generateBMCName(effectivePlatformType, effectiveChassisSN);
+
+        const prefix = extractPrefixFromBMC(generatedBMC);
+        const [mRows] = await conn.execute(
+          'SELECT manufacturer_name FROM manufacturers WHERE platform_prefix = ?',
+          [prefix]
+        );
+        if (mRows.length > 0) {
+          manufacturerName = mRows[0].manufacturer_name;
+        }
+      }
+
+      // 5. Build allowed fields
       const allowedFields = [
-        'location',
-        'system_pn',
-        'platform_type',
-        'po',
-        'bmc_mac',
-        'mb_sn',
-        'ethernet_mac',
-        'cpu_socket',
-        'cpu_vendor',
-        'chassis_sn',
-        'chassis_type',
-        'cpu_p0_sn',
-        'cpu_p0_socket_date_code',
-        'cpu_p1_sn',
-        'cpu_p1_socket_date_code',
-        'm2_pn',
-        'm2_sn',
-        'dimm_pn',
-        'dimm_qty',
-
-        // ✅ TESTING FIELDS
-        'visual_inspection_status',
-        'boot_status',
-        'dimms_detected_status',
-        'lom_working_status',
-
-        'bios_version',
-        'bmc_version',
-        'scm_fpga_version',
-        'hpm_fpga_version',
+        'location', 'system_pn', 'platform_type', 'po', 'bmc_mac', 'mb_sn',
+        'ethernet_mac', 'cpu_socket', 'cpu_vendor', 'chassis_sn', 'chassis_type',
+        'cpu_p0_sn', 'cpu_p0_socket_date_code', 'cpu_p1_sn', 'cpu_p1_socket_date_code',
+        'm2_pn', 'm2_sn', 'dimm_pn', 'dimm_qty',
+        'visual_inspection_status', 'boot_status', 'dimms_detected_status', 'lom_working_status',
+        'bios_version', 'bmc_version', 'scm_fpga_version', 'hpm_fpga_version',
       ];
 
       allowedFields.forEach((field) => {
@@ -847,55 +816,39 @@ app.put('/api/builds/bulk-update', async (req, res) => {
       });
 
       if (projectNameId !== null) {
-        fields.push('project_name = ?'); // this is your FK column in builds
+        fields.push('project_name = ?');
         values.push(projectNameId);
       }
-
-      // ✅ Update BMC name
       if (generatedBMC) {
         fields.push('bmc_name = ?');
         values.push(generatedBMC);
       }
-
-      // ✅ Update manufacturer
       if (manufacturerName) {
         fields.push('manufacturer = ?');
         values.push(manufacturerName);
       }
 
-      // ============================================
-      // ✅ UPDATE BUILDS TABLE
-      // ============================================
+      // 6. Update builds table
       if (fields.length > 0) {
         values.push(chassis_sn);
-
         await conn.execute(
-          `UPDATE builds SET ${fields.join(', ')}, updated_at = NOW()
-           WHERE chassis_sn = ?`,
+          `UPDATE builds SET ${fields.join(', ')}, updated_at = NOW() WHERE chassis_sn = ?`,
           values
         );
       }
 
-      // ============================================
-      // ✅ DIMM SERIAL NUMBERS HANDLING
-      // ============================================
+      // 7. DIMM serial numbers — use effective chassis_sn in case it changed
       if (row.dimmSNs !== undefined && Array.isArray(row.dimmSNs)) {
-        // 1. Delete existing DIMMs
         await conn.execute(
           'DELETE FROM dimm_serial_numbers WHERE chassis_sn = ?',
           [chassis_sn]
         );
-
-        // 2. Prepare bulk insert
         const dimmValues = row.dimmSNs
           .filter(sn => sn && sn.trim())
-          .map(sn => [chassis_sn, sn.trim()]);
-
-        // 3. Insert new DIMMs
+          .map(sn => [effectiveChassisSN, sn.trim()]);
         if (dimmValues.length > 0) {
           await conn.query(
-            `INSERT INTO dimm_serial_numbers (chassis_sn, dimm_sn)
-             VALUES ?`,
+            'INSERT INTO dimm_serial_numbers (chassis_sn, dimm_sn) VALUES ?',
             [dimmValues]
           );
         }
@@ -909,6 +862,7 @@ app.put('/api/builds/bulk-update', async (req, res) => {
     res.status(500).json({ error: 'Update failed' });
   }
 });
+
 
 
 app.get('/api/projects', async (req, res) => {

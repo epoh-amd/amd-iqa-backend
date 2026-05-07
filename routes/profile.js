@@ -628,7 +628,7 @@ router.get('/debug/test-profile-data', (req, res) => {
  * Initiate Okta OIDC authentication
  */
 //original okta flow uncomment this in production
-/*
+
 router.get('/auth/okta', (req, res, next) => {
   console.log('=== Okta Auth Initiation ===');
   console.log('OKTA_ISSUER:', process.env.OKTA_ISSUER);
@@ -651,8 +651,8 @@ router.get('/auth/okta', (req, res, next) => {
     next();
   })(req, res, next);
 }, passport.authenticate('okta'));
-*/
 
+/*
 router.get('/auth/okta', async (req, res, next) => {
   // Development bypass: skip Okta entirely and simulate a successful login
   if (process.env.NODE_ENV === 'development') {
@@ -722,6 +722,7 @@ router.get('/auth/okta', async (req, res, next) => {
     next();
   })(req, res, next);
 }, passport.authenticate('okta'));
+*/
 
 /**
  * GET /auth/okta/callback

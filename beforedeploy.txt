@@ -253,3 +253,26 @@ ALTER TABLE waiver_drafts
 DROP INDEX user_id;
 
 ALTER TABLE waivers ADD COLUMN cancel_reason TEXT NULL;
+
+
+ALTER TABLE waivers
+MODIFY COLUMN status ENUM('New', 'Approved', 'Cancelled', 'Closed', 'Pending');
+
+SET SQL_SAFE_UPDATES = 0;
+
+UPDATE waivers
+SET status = 'New'
+WHERE status = 'Pending';
+
+SET SQL_SAFE_UPDATES = 1;
+
+ALTER TABLE waivers
+MODIFY COLUMN status ENUM('New', 'Approved', 'Cancelled', 'Closed');
+
+ALTER TABLE waivers ADD COLUMN cancelled_by VARCHAR(255) DEFAULT NULL;
+
+
+add in ssh in .env file
+
+
+ALTER TABLE waivers ADD COLUMN modified_by VARCHAR(255) NULL;

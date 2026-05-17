@@ -885,6 +885,45 @@ app.get('/api/projects', async (req, res) => {
 });
 
 
+const SftpClient = require('ssh2-sftp-client');
+
+app.post('/api/extract-log', async (req, res) => {
+  const { chassisSN, bmcName } = req.body;
+  console.log("bmcname:"+ bmcName);
+  const sftp = new SftpClient();
+  
+  const fs = require('fs');
+  const tempDir = path.join(__dirname, 'uploads', 'temp');
+  if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+
+  try {
+    const sshHost = `${bmcName.toLowerCase()}-os`;
+    const filename = `${sshHost}-system-checks.log`;
+    const localPath = path.join(tempDir, filename);
+
+    //const sshHost = 'seagull-0050-os';
+
+    await sftp.connect({
+      host: sshHost,
+      username: process.env.SSH_USER,
+      password: process.env.SSH_PASS,
+      readyTimeout: 10000,
+      hostVerifier: () => true,
+    });
+
+    //await sftp.fastGet('/home/root/test.log', localPath);
+   await sftp.fastGet(`/home/root/system-checks/${filename}`, localPath);
+
+    await sftp.end();
+
+    res.json({ success: true, filename });
+  } catch (err) {
+    console.error('SSH extract error:', err);
+    res.status(500).json({ error: 'Failed to extract log', message: err.message });
+  }
+});
+
+
 
 //http://localhost:5000/api/dashboard/build-data/Weisshorn%20SP7
 /**
@@ -2845,6 +2884,321 @@ GROUP BY b.chassis_sn;
   });
 });
 
+
+/**
+ * GET /api/builds/:chassisSN/complete
+ * 
+ * Retrieve complete build details with quality data, failures, and DIMMs
+ * Enhanced version that properly structures photo data
+ * 
+ * @param {string} chassisSN - Chassis serial number
+ * @returns {object} - Complete build record with quality details and photos formatted used for export excel in search tab
+ */
+app.get('/api/builds/:chassisSN/complete/export', (req, res) => {
+  const { chassisSN } = req.params;
+
+  // Get complete build details including quality data
+  const buildQuery = `
+   SELECT
+    b.chassis_sn,
+    b.jira_ticket_no,
+    b.location,
+    b.build_engineer,
+    b.is_custom_config,
+    pn.project_name AS project_name,
+    b.system_pn,
+    b.platform_type,
+    b.manufacturer,
+    b.chassis_type,
+    b.bmc_name,
+    b.mb_sn,
+    b.ethernet_mac,
+    b.cpu_socket,
+    b.cpu_vendor,
+    b.cpu_p0_sn,
+    b.cpu_p0_socket_date_code,
+    b.cpu_p1_sn,
+    b.cpu_p1_socket_date_code,
+    b.cpu_program_name,
+    b.m2_pn,
+    b.m2_sn,
+    b.dimm_pn,
+    b.dimm_qty,
+
+    COALESCE(ANY_VALUE(rh.original_visual_inspection),       b.visual_inspection_status) AS visual_inspection_status,
+    COALESCE(ANY_VALUE(rh.original_visual_inspection_notes), b.visual_inspection_notes)  AS visual_inspection_notes,
+    COALESCE(ANY_VALUE(rh.original_boot_status),             b.boot_status)              AS boot_status,
+    COALESCE(ANY_VALUE(rh.original_boot_notes),              b.boot_notes)               AS boot_notes,
+    COALESCE(ANY_VALUE(rh.original_dimms_detected),          b.dimms_detected_status)    AS dimms_detected_status,
+    COALESCE(ANY_VALUE(rh.original_dimms_detected_notes),    b.dimms_detected_notes)     AS dimms_detected_notes,
+    COALESCE(ANY_VALUE(rh.original_lom_working),             b.lom_working_status)       AS lom_working_status,
+    COALESCE(ANY_VALUE(rh.original_lom_working_notes),       b.lom_working_notes)        AS lom_working_notes,
+
+
+    b.fpy_status,
+    b.can_continue,
+    b.status,
+    b.created_at,
+    b.updated_at,
+    b.bios_version,
+    b.bmc_version,
+    b.scm_fpga_version,
+    b.hpm_fpga_version,
+    b.problem_description,
+    b.bmc_mac,
+    b.po,
+
+    GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') AS dimm_sns
+
+FROM builds b
+
+LEFT JOIN project_name pn
+    ON b.project_name = pn.id
+
+LEFT JOIN dimm_serial_numbers d
+    ON b.chassis_sn = d.chassis_sn
+
+LEFT JOIN rework_history rh
+    ON b.chassis_sn = rh.chassis_sn
+    AND rh.id = (
+        SELECT id FROM rework_history
+        WHERE chassis_sn = b.chassis_sn
+        ORDER BY id DESC
+        LIMIT 1
+    )
+
+WHERE b.chassis_sn = ?
+
+GROUP BY b.chassis_sn;
+  `;
+
+  db.query(buildQuery, [chassisSN], (err, buildResults) => {
+    if (err) {
+      console.error('Error fetching complete build details:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+
+    if (buildResults.length === 0) {
+      return res.status(404).json({ error: 'Build not found' });
+    }
+
+    const build = buildResults[0];
+
+    // Parse dimm serial numbers
+    build.dimmSNs = build.dimm_sns ? build.dimm_sns.split(',') : [];
+    delete build.dimm_sns;
+
+    // Get failures
+      // Get failures from build_failures and rework_failures
+    const failureQuery = `
+      SELECT failure_mode, failure_category
+      FROM (
+        SELECT bf.failure_mode, bf.failure_category
+        FROM build_failures bf
+        WHERE bf.chassis_sn = ?
+
+        UNION ALL
+
+        SELECT rf.failure_mode, rf.failure_category
+        FROM rework_history rh
+        JOIN rework_failures rf ON rh.id = rf.rework_id
+        WHERE rh.chassis_sn = ?
+      ) combined
+      WHERE failure_mode IS NOT NULL
+    `;
+
+    dbQuery(failureQuery, [chassisSN, chassisSN], (err, failureResults) => {
+      if (err) {
+        console.error('Error fetching failures:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+
+      const failures = failureResults || [];
+
+      // Get photos
+     // const photoQuery = `
+      //  SELECT photo_type, file_path 
+      //  FROM build_photos 
+      //  WHERE chassis_sn = ?
+     // `;
+
+     // dbQuery(photoQuery, [chassisSN], (err, photoResults) => {
+      //  if (err) {
+     // //    console.error('Error fetching photos:', err);
+      //    return res.status(500).json({ error: 'Database error' });
+      //  }
+
+        // Structure the response
+        const response = {
+          ...build,
+          failures: failures,
+          photos: [],//photoResults || [],
+          qualityDetails: {
+            fpyStatus: build.fpy_status,
+            problemDescription: build.problem_description,
+            numberOfFailures: failures.length.toString(),
+            failureModes: failures.map(f => f.failure_mode),
+            failureCategories: failures.map(f => f.failure_category),
+            canRework: build.can_continue === 'Yes' ? 'Yes, Need to update hardware/PCBA information' :
+              build.can_continue === 'No' ? 'No, mark this build as a failed build' : '',
+            saveOption: build.status === 'In Progress' ? 'continue' :
+              build.status === 'Fail' ? 'failed' :
+                build.status === 'Complete' ? 'complete' : 'continue'
+          }
+        };
+
+        res.json(response);
+     // });
+    });
+  });
+});
+
+
+app.post('/api/builds/batch/export', async (req, res) => {
+  const { chassisList } = req.body;
+
+  if (!chassisList || chassisList.length === 0) {
+    return res.status(400).json({ error: 'chassisList is required' });
+  }
+
+  const placeholders = chassisList.map(() => '?').join(',');
+
+  const buildQuery = `
+    SELECT
+      b.chassis_sn,
+      b.jira_ticket_no,
+      b.location,
+      b.build_engineer,
+      b.is_custom_config,
+      pn.project_name AS project_name,
+      b.system_pn,
+      b.platform_type,
+      b.manufacturer,
+      b.chassis_type,
+      b.bmc_name,
+      b.mb_sn,
+      b.ethernet_mac,
+      b.cpu_socket,
+      b.cpu_vendor,
+      b.cpu_p0_sn,
+      b.cpu_p0_socket_date_code,
+      b.cpu_p1_sn,
+      b.cpu_p1_socket_date_code,
+      b.cpu_program_name,
+      b.m2_pn,
+      b.m2_sn,
+      b.dimm_pn,
+      b.dimm_qty,
+
+      COALESCE(ANY_VALUE(rh.original_visual_inspection),       b.visual_inspection_status) AS visual_inspection_status,
+      COALESCE(ANY_VALUE(rh.original_visual_inspection_notes), b.visual_inspection_notes)  AS visual_inspection_notes,
+      COALESCE(ANY_VALUE(rh.original_boot_status),             b.boot_status)              AS boot_status,
+      COALESCE(ANY_VALUE(rh.original_boot_notes),              b.boot_notes)               AS boot_notes,
+      COALESCE(ANY_VALUE(rh.original_dimms_detected),          b.dimms_detected_status)    AS dimms_detected_status,
+      COALESCE(ANY_VALUE(rh.original_dimms_detected_notes),    b.dimms_detected_notes)     AS dimms_detected_notes,
+      COALESCE(ANY_VALUE(rh.original_lom_working),             b.lom_working_status)       AS lom_working_status,
+      COALESCE(ANY_VALUE(rh.original_lom_working_notes),       b.lom_working_notes)        AS lom_working_notes,
+
+      b.fpy_status,
+      b.can_continue,
+      b.status,
+      b.created_at,
+      b.updated_at,
+      b.bios_version,
+      b.bmc_version,
+      b.scm_fpga_version,
+      b.hpm_fpga_version,
+      b.problem_description,
+      b.bmc_mac,
+      b.po,
+
+      GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') AS dimm_sns
+
+    FROM builds b
+
+    LEFT JOIN project_name pn
+      ON b.project_name = pn.id
+
+    LEFT JOIN dimm_serial_numbers d
+      ON b.chassis_sn = d.chassis_sn
+
+    LEFT JOIN rework_history rh
+      ON b.chassis_sn = rh.chassis_sn
+      AND rh.id = (
+        SELECT id FROM rework_history
+        WHERE chassis_sn = b.chassis_sn
+        ORDER BY id DESC
+        LIMIT 1
+      )
+
+    WHERE b.chassis_sn IN (${placeholders})
+    GROUP BY b.chassis_sn
+  `;
+
+  const failureQuery = `
+    SELECT chassis_sn, failure_mode, failure_category
+    FROM (
+      SELECT bf.chassis_sn, bf.failure_mode, bf.failure_category
+      FROM build_failures bf
+      WHERE bf.chassis_sn IN (${placeholders})
+
+      UNION ALL
+
+      SELECT rh.chassis_sn, rf.failure_mode, rf.failure_category
+      FROM rework_history rh
+      JOIN rework_failures rf ON rh.id = rf.rework_id
+      WHERE rh.chassis_sn IN (${placeholders})
+    ) combined
+    WHERE failure_mode IS NOT NULL
+  `;
+
+  try {
+    db.query(buildQuery, chassisList, (err, buildResults) => {
+      if (err) {
+        console.error('Batch build query error:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+
+      db.query(failureQuery, [...chassisList, ...chassisList], (err, failureResults) => {
+        if (err) {
+          console.error('Batch failure query error:', err);
+          return res.status(500).json({ error: 'Database error' });
+        }
+
+        // Group failures by chassis_sn
+        const failureMap = {};
+        (failureResults || []).forEach(f => {
+          if (!failureMap[f.chassis_sn]) failureMap[f.chassis_sn] = [];
+          failureMap[f.chassis_sn].push({
+            failure_mode: f.failure_mode,
+            failure_category: f.failure_category
+          });
+        });
+
+        // Merge failures into each build
+        const response = buildResults.map(build => {
+          const dimmSNs = build.dimm_sns ? build.dimm_sns.split(',') : [];
+          const failures = failureMap[build.chassis_sn] || [];
+          const { dimm_sns, ...rest } = build;
+
+          return {
+            ...rest,
+            dimmSNs,
+            failures,
+          };
+        });
+
+        res.json(response);
+      });
+    });
+  } catch (err) {
+    console.error('Batch export error:', err);
+    res.status(500).json({ error: 'Batch export failed' });
+  }
+});
+
+
+
 // ============================================================================
 // EDIT BUILD DATA API ENDPOINTS
 // ============================================================================
@@ -3842,7 +4196,7 @@ async function checkForDuplicates(chassisSN, mbSN, bmcMac, ethernetMac, isRework
  */
 app.post('/api/builds', async (req, res) => {
   // Accept both camelCase and snake_case for build engineer
-  const { location, isCustomConfig, systemInfo, qualityDetails, status, buildEngineer, build_engineer } = req.body;
+  const { location, isCustomConfig, systemInfo, qualityDetails, status, buildEngineer, build_engineer, assetId } = req.body;
 
   // Prefer snake_case if present, else camelCase
   const resolvedBuildEngineer = build_engineer || buildEngineer || null;
@@ -4118,9 +4472,10 @@ app.post('/api/builds', async (req, res) => {
       if (autoMappedStatus) {
         try {
           await connection.execute(
-            'INSERT INTO master_builds (chassis_sn, master_status) VALUES (?, ?) ON DUPLICATE KEY UPDATE master_status = ?',
-            [systemInfo.chassisSN, autoMappedStatus, autoMappedStatus]
+            'INSERT INTO master_builds (chassis_sn, master_status, changegear_asset_id) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE master_status = ?, changegear_asset_id = ?',
+            [systemInfo.chassisSN, autoMappedStatus, assetId || null, autoMappedStatus, assetId || null]
           );
+
           console.log(`Auto-mapped master status for ${systemInfo.chassisSN} to: ${autoMappedStatus}`);
         } catch (error) {
           console.error('Error auto-mapping master status:', error);
@@ -4128,6 +4483,17 @@ app.post('/api/builds', async (req, res) => {
         }
       }
     }
+
+        // Move extracted log from temp to uploads if present
+    if (req.body.extractLogFile) {
+      const fs = require('fs');
+      const tempPath = path.join(__dirname, 'uploads', 'temp', req.body.extractLogFile);
+      const finalPath = path.join(__dirname, 'uploads', req.body.extractLogFile);
+      if (fs.existsSync(tempPath)) {
+        fs.renameSync(tempPath, finalPath);
+      }
+    }
+
 
     // Commit transaction
     await connection.commit();
@@ -4231,9 +4597,9 @@ app.get('/api/waivers/pending', async (req, res) => {
   try {
     connection = await db.promise().getConnection();
     const [rows] = await connection.query(
-      `SELECT waiver_id, part_number, submitted_by, submitted_at
-       FROM waivers WHERE status = 'Pending'
-       ORDER BY submitted_at DESC`
+      `SELECT waiver_id, part_number, submitted_by, submitted_at, status, cancel_reason, cancelled_by
+        FROM waivers
+        ORDER BY submitted_at DESC;`
     );
     res.json(rows);
   } catch (error) {
@@ -4243,12 +4609,13 @@ app.get('/api/waivers/pending', async (req, res) => {
   }
 });
 
+
 // PATCH waiver status (Approved / Rejected / Cancelled)
 app.patch('/api/waivers/:waiverId/status', async (req, res) => {
   const { waiverId } = req.params;
-  const { status, reason } = req.body;
+  const { status, reason, cancelledBy } = req.body;
 
-  const allowed = ['Approved', 'Rejected', 'Cancelled'];
+  const allowed = ['Approved', 'Closed', 'Cancelled'];
   if (!allowed.includes(status)) {
     return res.status(400).json({ error: `Invalid status: ${status}` });
   }
@@ -4257,9 +4624,9 @@ app.patch('/api/waivers/:waiverId/status', async (req, res) => {
   try {
     connection = await db.promise().getConnection();
     await connection.execute(
-      `UPDATE waivers SET status = ?, cancel_reason = ?, updated_at = CURRENT_TIMESTAMP
+      `UPDATE waivers SET status = ?, cancel_reason = ?, cancelled_by = ?, updated_at = CURRENT_TIMESTAMP
        WHERE waiver_id = ?`,
-      [status, reason || null, waiverId]
+      [status, reason || null, cancelledBy || null, waiverId]
     );
     res.json({ success: true, waiverId, status });
   } catch (error) {
@@ -4301,6 +4668,138 @@ app.delete("/api/waivers/:waiverId", async (req, res) => {
   }
 });
 
+app.get('/api/waivers/my/:full_name', async (req, res) => {
+  const { full_name } = req.params;
+  try {
+    const [rows] = await db.promise().query(
+      `SELECT *
+       FROM waivers WHERE submitted_by = ? ORDER BY submitted_at DESC`,
+      [full_name]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching user waivers:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/waivers/:waiverId/edit', async (req, res) => {
+  const { waiverId } = req.params;
+  const {
+    partNumber, revision, description, subcontractor,
+    assemblyLevel, requestor, startDate, endDate, waiverType,
+    reason, workorder, workorderQty,
+    materialRows, processData, testData, specData, reworkData, labelData,
+    modifiedBy
+  } = req.body;
+
+  // helper at the top of the route (or inline)
+const toDateOnly = (val) => val ? val.toString().slice(0, 10) : null;
+
+
+  if (!waiverId) {
+    return res.status(400).json({ error: 'waiverId is required' });
+  }
+
+  let connection;
+  try {
+    connection = await db.promise().getConnection();
+    await connection.beginTransaction();
+
+    // 1. Update main waiver record — preserve status, set modified_by
+    await connection.execute(
+      `UPDATE waivers SET
+         part_number    = ?,
+         revision       = ?,
+         description    = ?,
+         subcontractor  = ?,
+         assembly_level = ?,
+         requestor      = ?,
+         start_date     = ?,
+         end_date       = ?,
+         waiver_type    = ?,
+         reason         = ?,
+         workorder      = ?,
+         workorder_qty  = ?,
+         modified_by    = ?,
+         updated_at     = CURRENT_TIMESTAMP
+       WHERE waiver_id = ?`,
+      [
+        partNumber, revision, description, subcontractor,
+        assemblyLevel, requestor, toDateOnly(startDate),   // ← was: startDate || null
+        toDateOnly(endDate), 
+        JSON.stringify(waiverType || []),
+        reason, workorder, workorderQty || null,
+        modifiedBy,
+        waiverId
+      ]
+    );
+
+    // 2. Replace material rows
+    if (materialRows && materialRows.length > 0) {
+      await connection.execute(
+        'DELETE FROM waiver_material_rows WHERE waiver_id = ?', [waiverId]
+      );
+      for (let i = 0; i < materialRows.length; i++) {
+        const r = materialRows[i];
+        await connection.execute(
+          `INSERT INTO waiver_material_rows
+             (waiver_id, sort_order, current_part, current_part_description,
+              new_part, new_part_description, action, instructions, file_path)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            waiverId, i,
+            r.currentPart || null, r.currentPartDescription || null,
+            r.newPart || null, r.newPartDescription || null,
+            r.action || null, r.instructions || null, r.file || null
+          ]
+        );
+      }
+    }
+
+    // 3. Update sections
+    const sections = [
+      { type: 'process', data: processData, extra: null },
+      { type: 'test',    data: testData,    extra: JSON.stringify({ currentPart: testData?.currentPart, toBePart: testData?.toBePart }) },
+      { type: 'spec',    data: specData,    extra: JSON.stringify({ specImpact: specData?.specImpact }) },
+      { type: 'rework',  data: reworkData,  extra: null },
+      { type: 'label',   data: labelData,   extra: null },
+    ];
+
+    for (const section of sections) {
+      if (!section.data) continue;
+      await connection.execute(
+        `INSERT INTO waiver_sections
+           (waiver_id, section_type, instructions, extra_data, file_path_1, file_path_2)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           instructions = VALUES(instructions),
+           extra_data   = VALUES(extra_data),
+           file_path_1  = VALUES(file_path_1),
+           file_path_2  = VALUES(file_path_2)`,
+        [
+          waiverId,
+          section.type,
+          section.data.instructions || null,
+          section.extra,
+          section.data.file || section.data.file1 || null,
+          section.data.file2 || null
+        ]
+      );
+    }
+
+    await connection.commit();
+    res.json({ success: true, message: 'Waiver updated by approver', waiverId });
+
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error('Error in approver edit:', error);
+    res.status(500).json({ error: 'Failed to update waiver', message: error.message });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 
 
 app.post('/api/waivers/submit', async (req, res) => {
@@ -4326,7 +4825,7 @@ app.post('/api/waivers/submit', async (req, res) => {
         (waiver_id, part_number, revision, description, subcontractor,
          assembly_level, requestor, start_date, end_date, waiver_type,
          reason, workorder, workorder_qty, status, submitted_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'New', ?)
        ON DUPLICATE KEY UPDATE
          part_number    = VALUES(part_number),
          revision       = VALUES(revision),
@@ -4375,10 +4874,10 @@ app.post('/api/waivers/submit', async (req, res) => {
     // 3. Insert sections
     const sections = [
       { type: 'process', data: processData, extra: null },
-      { type: 'test',    data: testData,    extra: JSON.stringify({ currentPart: testData?.currentPart, toBePart: testData?.toBePart }) },
-      { type: 'spec',    data: specData,    extra: JSON.stringify({ specImpact: specData?.specImpact }) },
-      { type: 'rework',  data: reworkData,  extra: null },
-      { type: 'label',   data: labelData,   extra: null },
+      { type: 'test', data: testData, extra: JSON.stringify({ currentPart: testData?.currentPart, toBePart: testData?.toBePart }) },
+      { type: 'spec', data: specData, extra: JSON.stringify({ specImpact: specData?.specImpact }) },
+      { type: 'rework', data: reworkData, extra: null },
+      { type: 'label', data: labelData, extra: null },
     ];
 
     for (const section of sections) {
@@ -4397,7 +4896,7 @@ app.post('/api/waivers/submit', async (req, res) => {
           section.type,
           section.data.instructions || null,
           section.extra,
-          section.data.file  || section.data.file1 || null,
+          section.data.file || section.data.file1 || null,
           section.data.file2 || null
         ]
       );
@@ -4446,40 +4945,40 @@ app.get('/api/waiver/details/:waiverId', async (req, res) => {
     for (const s of sections) {
       sectionMap[s.section_type] = {
         instructions: s.instructions,
-        file:  s.file_path_1,
+        file: s.file_path_1,
         file2: s.file_path_2,
         ...safeParse(s.extra_data, {})
       };
     }
 
-const responseData = {
-  waiverId: waiver.waiver_id,
-  partNumber: waiver.part_number,
-  revision: waiver.revision,
-  description: waiver.description,
-  subcontractor: waiver.subcontractor,
-  assemblyLevel: waiver.assembly_level,
-  requestor: waiver.requestor,
-  startDate: waiver.start_date,
-  endDate: waiver.end_date,
-  waiverType: safeParse(waiver.waiver_type, []),
-  reason: waiver.reason,
-  workorder: waiver.workorder,
-  workorderQty: waiver.workorder_qty,
-  status: waiver.status,
-  submittedBy: waiver.submitted_by,
-  materialRows,
-  processData: sectionMap['process'] || {},
-  testData: sectionMap['test'] || {},
-  specData: sectionMap['spec'] || {},
-  reworkData: sectionMap['rework'] || {},
-  labelData: sectionMap['label'] || {},
-};
+    const responseData = {
+      waiverId: waiver.waiver_id,
+      partNumber: waiver.part_number,
+      revision: waiver.revision,
+      description: waiver.description,
+      subcontractor: waiver.subcontractor,
+      assemblyLevel: waiver.assembly_level,
+      requestor: waiver.requestor,
+      startDate: waiver.start_date,
+      endDate: waiver.end_date,
+      waiverType: safeParse(waiver.waiver_type, []),
+      reason: waiver.reason,
+      workorder: waiver.workorder,
+      workorderQty: waiver.workorder_qty,
+      status: waiver.status,
+      submittedBy: waiver.submitted_by,
+      materialRows,
+      processData: sectionMap['process'] || {},
+      testData: sectionMap['test'] || {},
+      specData: sectionMap['spec'] || {},
+      reworkData: sectionMap['rework'] || {},
+      labelData: sectionMap['label'] || {},
+    };
 
-console.log('Response Data:');
-console.dir(responseData, { depth: null });
+    console.log('Response Data:');
+    console.dir(responseData, { depth: null });
 
-res.json(responseData);
+    res.json(responseData);
 
   } catch (err) {
     console.error('Error fetching waiver details:', err);
@@ -5568,62 +6067,6 @@ app.get('/api/builds/:chassisSN/rework-history', (req, res) => {
  * @returns {array} - Array of builds with master data if exists
  */
 app.get('/api/builds', (req, res) => {
-
-  /*
-  const query = `
-    SELECT 
-  b.*,
-  pn.project_name AS project_name,
-  GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') as dimm_sns,
-  mb.location as master_location,
-  mb.custom_location,
-  mb.team_security,
-  mb.department,
-  mb.build_name,
-  mb.changegear_asset_id,
-  mb.notes as master_notes,
-  mb.sms_order,
-  mb.cost_center,
-  mb.capitalization,
-  DATE_FORMAT(mb.delivery_date, '%Y-%m-%d') as delivery_date,
-  mb.master_status,
-  mb.created_at as master_created_at,
-  mb.updated_at as master_updated_at,
-  -- FIXED: Use COUNT(DISTINCT) to get accurate rework count
-  CASE 
-    WHEN COUNT(DISTINCT rh.id) > 0 THEN 'Yes'
-    ELSE 'No'
-  END as has_rework,
-  COUNT(DISTINCT rh.id) as rework_count,  -- ✅ Fixed: Count distinct rework records
-  CASE 
-    WHEN mb.chassis_sn IS NOT NULL THEN JSON_OBJECT(
-      'location', mb.location,
-      'custom_location', mb.custom_location,
-      'team_security', mb.team_security,
-      'department', mb.department,
-      'build_name', mb.build_name,
-      'changegear_asset_id', mb.changegear_asset_id,
-      'notes', mb.notes,
-      'sms_order', mb.sms_order,
-      'cost_center', mb.cost_center,
-      'capitalization', mb.capitalization,
-      'delivery_date', DATE_FORMAT(mb.delivery_date, '%Y-%m-%d'),
-      'master_status', mb.master_status,
-      -- Build Engineer and Jira Ticket No now come from builds table
-      'build_engineer', b.build_engineer,
-      'jira_ticket_no', b.jira_ticket_no
-    )
-    ELSE NULL
-  END as master_data
-FROM builds b
-LEFT JOIN dimm_serial_numbers d ON b.chassis_sn = d.chassis_sn
-LEFT JOIN master_builds mb ON b.chassis_sn = mb.chassis_sn
-LEFT JOIN rework_history rh ON b.chassis_sn = rh.chassis_sn
-LEFT JOIN project_name pn ON b.project_name = pn.id 
-GROUP BY b.chassis_sn
-ORDER BY b.created_at DESC
-  `;
-*/
   const query = `
 SELECT 
   -- Build columns explicitly listed
@@ -5748,6 +6191,8 @@ ORDER BY b.created_at DESC;
     res.json(results);
   });
 });
+
+
 
 /**
  * POST /api/master-builds/:chassisSN
@@ -6719,14 +7164,14 @@ app.get("/api/waiver/draft/:userId/:waiverId", (req, res) => {
     };
 
     return res.json({
-      formData:     safeParse(row.form_data,     null),
-      materialRows: safeParse(row.material_rows,  null),
-      processData:  safeParse(row.process_data,   null),
-      testData:     safeParse(row.test_data,      null),
-      specData:     safeParse(row.spec_data,      null),
-      reworkData:   safeParse(row.rework_data,    null),
-      labelData:    safeParse(row.label_data,     null),
-      openSection:  safeParse(row.open_section,   [])
+      formData: safeParse(row.form_data, null),
+      materialRows: safeParse(row.material_rows, null),
+      processData: safeParse(row.process_data, null),
+      testData: safeParse(row.test_data, null),
+      specData: safeParse(row.spec_data, null),
+      reworkData: safeParse(row.rework_data, null),
+      labelData: safeParse(row.label_data, null),
+      openSection: safeParse(row.open_section, [])
     });
   });
 });

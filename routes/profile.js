@@ -629,6 +629,7 @@ router.get('/debug/test-profile-data', (req, res) => {
  */
 //original okta flow uncomment this in production
 
+
 router.get('/auth/okta', (req, res, next) => {
   console.log('=== Okta Auth Initiation ===');
   console.log('OKTA_ISSUER:', process.env.OKTA_ISSUER);
@@ -651,6 +652,8 @@ router.get('/auth/okta', (req, res, next) => {
     next();
   })(req, res, next);
 }, passport.authenticate('okta'));
+
+
 
 /*
 router.get('/auth/okta', async (req, res, next) => {

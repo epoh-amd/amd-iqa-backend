@@ -753,4 +753,43 @@ cron.schedule('* * * * *', async () => {
 });
 */
 
+router.post('/waiver/notify', async (req, res) => {
+  const { waiverId, partNumber, submittedBy, approvers } = req.body;
+  if (!approvers || !approvers.length) return res.json({ success: true });
+
+  try {
+    await transporter.sendMail({
+      from: `"AMD PDQD System" <noreply@amd.com>`,
+      to: approvers.join(','),
+      subject: `New Waiver Submitted: ${waiverId}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px;">
+          <h2 style="color: #222;">New Waiver Request</h2>
+          <p>A new waiver has been submitted and requires your approval.</p>
+          <table style="border-collapse: collapse; width: 100%; border: 1px solid #ccc;">
+            <tr style="background-color: #f2f2f2;">
+              <td style="padding: 10px 12px; font-weight: bold; border: 1px solid #ccc; background-color: #f2f2f2; width: 40%;">Waiver ID</td>
+              <td style="padding: 10px 12px; border: 1px solid #ccc;">${waiverId}</td>
+            </tr>
+            <tr>
+              <td style="padding: 10px 12px; font-weight: bold; border: 1px solid #ccc; background-color: #f2f2f2;">Part Number</td>
+              <td style="padding: 10px 12px; border: 1px solid #ccc;">${partNumber || '-'}</td>
+            </tr>
+            <tr style="background-color: #f2f2f2;">
+              <td style="padding: 10px 12px; font-weight: bold; border: 1px solid #ccc; background-color: #f2f2f2;">Submitted By</td>
+              <td style="padding: 10px 12px; border: 1px solid #ccc;">${submittedBy || '-'}</td>
+            </tr>
+          </table>
+          <br/>
+          <p>Please log in to the IQA system to review and approve.</p>
+        </div>
+      `
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Waiver notification email failed:', err);
+    res.status(500).json({ error: 'Email failed' });
+  }
+});
+
 module.exports = router;

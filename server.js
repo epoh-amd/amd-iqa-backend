@@ -222,6 +222,7 @@ app.get('/api/waivers/approve-link', async (req, res) => {
 
 
 app.use("/drafts", express.static(path.join(__dirname, "drafts")));
+app.use("/api/drafts", express.static(path.join(__dirname, "drafts")));
 // ============================================================================
 // STATIC FILE SERVING (for non-sudo deployments without Nginx)
 // ============================================================================

@@ -280,3 +280,7 @@ ALTER TABLE waivers ADD COLUMN modified_by VARCHAR(255) NULL;
 ALTER TABLE waivers ADD COLUMN approved_by VARCHAR(255) NULL;
 
 chmod 777 drafts in drafts folder
+
+
+modify the frontend src .env.production file to
+REACT_APP_BACKEND_URL= https://test.iqadashboard.amd.com

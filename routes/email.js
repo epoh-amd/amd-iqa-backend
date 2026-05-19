@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const cors = require('cors');
 const nodemailer = require('nodemailer');
 const cron = require('node-cron');
 const axios = require('axios'); // <-- for fetching backend data
@@ -196,7 +197,7 @@ cron.schedule('30 8 * * 1', async () => {
           const weeklyChart = isAllZero
             ? await generateBuildDeliveryChartBase641(buildData, platform)
             : await generateBuildDeliveryChartBase64(buildData, platform);
-            const factoryChart = isAllZero
+          const factoryChart = isAllZero
             ? null
             : await generateFactoryChartBase64(buildData, platform);
 
@@ -340,7 +341,7 @@ cron.schedule('30 8 * * 1', async () => {
                 }
               }
             );
-            
+
 
             const base64Filtered = await generateLocationAllocationChartBase64NonStacked(filteredData, platform, subcat);
 
@@ -753,41 +754,493 @@ cron.schedule('* * * * *', async () => {
 });
 */
 
+const crypto = require('crypto');
+const { getGlobalPool } = require('../utils/database');
+const SECRET = 'amd-iqa-secret-key';
+
 router.post('/waiver/notify', async (req, res) => {
-  const { waiverId, partNumber, submittedBy, approvers } = req.body;
+  const { waiverId, partNumber, description, reason, submittedBy, approvers, pdfBase64 } = req.body;
   if (!approvers || !approvers.length) return res.json({ success: true });
+
+  const token = crypto.createHmac('sha256', SECRET).update(waiverId).digest('hex');
+  const approvalLink = `${apiUrl}/email/waiver/approve-link?id=${waiverId}&token=${token}`;
+  const cancelLink = `${apiUrl}/email/waiver/cancel-link?id=${waiverId}&token=${token}`;
+
+  const subject = `Waiver Raised – # ${waiverId}, for ${[partNumber, description].filter(Boolean).join(' ')}`;
+
+  const attachments = pdfBase64 ? [{
+    filename: `${waiverId}.pdf`,
+    content: Buffer.from(pdfBase64, 'base64'),
+    contentType: 'application/pdf'
+  }] : [];
 
   try {
     await transporter.sendMail({
       from: `"AMD PDQD System" <noreply@amd.com>`,
       to: approvers.join(','),
-      subject: `New Waiver Submitted: ${waiverId}`,
+      subject,
       html: `
-        <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 600px;">
-          <h2 style="color: #222;">New Waiver Request</h2>
-          <p>A new waiver has been submitted and requires your approval.</p>
-          <table style="border-collapse: collapse; width: 100%; border: 1px solid #ccc;">
-            <tr style="background-color: #f2f2f2;">
-              <td style="padding: 10px 12px; font-weight: bold; border: 1px solid #ccc; background-color: #f2f2f2; width: 40%;">Waiver ID</td>
-              <td style="padding: 10px 12px; border: 1px solid #ccc;">${waiverId}</td>
-            </tr>
+        <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
+          <p>Dear Approver,</p>
+          <p>
+            There is a waiver <strong># ${waiverId}</strong> been raised in
+            <strong>"${partNumber || '-'}"</strong> due to
+            <strong>"${reason || '-'}"</strong>.
+          </p>
+          <p>Please find the waiver PDF attached to this email.</p>
+          <br/>
+          <table cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:12px 0;">
             <tr>
-              <td style="padding: 10px 12px; font-weight: bold; border: 1px solid #ccc; background-color: #f2f2f2;">Part Number</td>
-              <td style="padding: 10px 12px; border: 1px solid #ccc;">${partNumber || '-'}</td>
-            </tr>
-            <tr style="background-color: #f2f2f2;">
-              <td style="padding: 10px 12px; font-weight: bold; border: 1px solid #ccc; background-color: #f2f2f2;">Submitted By</td>
-              <td style="padding: 10px 12px; border: 1px solid #ccc;">${submittedBy || '-'}</td>
+              <td>
+                <a href="${approvalLink}" style="display:inline-block;padding:10px 24px;background:#28a745;color:white;text-decoration:none;border-radius:6px;font-weight:bold;">
+                  ✓ Approve Waiver
+                </a>
+              </td>
+              <td>
+                <a href="${cancelLink}" style="display:inline-block;padding:10px 24px;background:#dc3545;color:white;text-decoration:none;border-radius:6px;font-weight:bold;">
+                  ✕ Cancel Waiver
+                </a>
+              </td>
             </tr>
           </table>
-          <br/>
-          <p>Please log in to the IQA system to review and approve.</p>
+          <p style="color: #555; font-size: 13px; margin-top: 24px;">
+            If you encounter any problems with the links above, please
+            <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}" style="color:#0066cc;">login to the AMD PDQD System</a>
+            and navigate to the <strong>Waiver Management</strong> tab to perform your actions.
+          </p>
+          <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
+            This is an automated notification from the AMD PDQD System. Please do not reply to this email.
+          </p>
         </div>
-      `
+      `,
+      attachments
     });
     res.json({ success: true });
   } catch (err) {
     console.error('Waiver notification email failed:', err);
+    res.status(500).json({ error: 'Email failed' });
+  }
+});
+
+const actionPageStyles = `
+  body { font-family: Arial, sans-serif; background: #f5f5f5; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+  .card { background: white; border-radius: 10px; padding: 40px 48px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); max-width: 480px; width: 100%; text-align: center; }
+  .icon { font-size: 48px; margin-bottom: 16px; }
+  .waiver-id { font-size: 20px; font-weight: bold; color: #333; margin-bottom: 6px; }
+  h2 { margin: 0 0 8px; font-size: 18px; color: #222; }
+  p { color: #555; margin: 0 0 20px; font-size: 14px; }
+  textarea { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; resize: vertical; margin-bottom: 16px; font-family: Arial, sans-serif; }
+  select { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; margin-bottom: 16px; font-family: Arial, sans-serif; background: white; }
+  label { display: block; text-align: left; font-size: 13px; color: #444; margin-bottom: 6px; font-weight: bold; }
+.btn-confirm { background: #28a745; color: white; border: none; padding: 12px 32px; border-radius: 6px; font-size: 14px; font-weight: bold; cursor: pointer; width: 100%; margin-bottom: 10px; }
+  .btn-confirm:hover { background: #218838; }
+  .btn-danger { background: #dc3545; color: white; border: none; padding: 12px 32px; border-radius: 6px; font-size: 14px; font-weight: bold; cursor: pointer; width: 100%; margin-bottom: 10px; }
+  .btn-danger:hover { background: #c82333; }
+  .btn-cancel { background: white; color: #666; border: 1px solid #ccc; padding: 10px 32px; border-radius: 6px; font-size: 13px; cursor: pointer; width: 100%; }
+  .btn-cancel:hover { background: #f0f0f0; }
+`;
+
+
+router.get('/waiver/approve-link', async (req, res) => {
+  const { id, token } = req.query;
+  if (!id || !token) return res.status(400).send('<h2>Missing parameters.</h2>');
+
+  const expected = crypto.createHmac('sha256', SECRET).update(id).digest('hex');
+  if (token !== expected) {
+    return res.status(403).send(`
+      <html><body style="font-family:Arial,sans-serif;text-align:center;padding:60px">
+        <h2 style="color:red">&#10007; Invalid or expired approval link.</h2>
+      </body></html>
+    `);
+  }
+
+  try {
+    const pool = getGlobalPool();
+    const [rows] = await pool.promise().query(
+      `SELECT status, cancel_reason FROM waivers WHERE waiver_id = ?`, [id]
+    );
+    const waiver = rows[0];
+
+    if (!waiver) {
+      return res.status(404).send(`
+        <html><head><style>${actionPageStyles}</style></head>
+        <body><div class="card">
+          <div class="icon">❓</div>
+          <h2 style="color:#888">Waiver Not Found</h2>
+          <p>Waiver <strong>${id}</strong> does not exist.</p>
+        </div></body></html>
+      `);
+    }
+
+    if (waiver.status === 'Approved') {
+      return res.send(`
+        <html><head><style>${actionPageStyles}</style></head>
+        <body><div class="card">
+          <div class="icon" style="color:#28a745">&#10003;</div>
+          <h2 style="color:#28a745">Already Approved</h2>
+          <p>Waiver <strong>${id}</strong> has already been approved.</p>
+          <p style="color:#aaa;font-size:12px;margin-top:16px;">You may close this tab.</p>
+        </div></body></html>
+      `);
+    }
+
+    if (waiver.status === 'Cancelled') {
+      return res.send(`
+        <html><head><style>${actionPageStyles}</style></head>
+        <body><div class="card">
+          <div class="icon" style="color:#dc3545">✕</div>
+          <h2 style="color:#dc3545">Waiver Already Cancelled</h2>
+          <p>Waiver <strong>${id}</strong> has been cancelled and cannot be approved.</p>
+          ${waiver.cancel_reason ? `<p style="background:#f8f8f8;padding:12px;border-radius:6px;text-align:left;font-size:13px;"><strong>Reason:</strong> ${waiver.cancel_reason}</p>` : ''}
+          <p style="color:#aaa;font-size:12px;margin-top:16px;">You may close this tab.</p>
+        </div></body></html>
+      `);
+    }
+
+    const [userRows] = await pool.promise().query(
+      `SELECT u.full_name
+       FROM waiver_config wc
+       JOIN JSON_TABLE(wc.config_value, '$[*]' COLUMNS (email VARCHAR(255) PATH '$')) jt
+         ON 1=1
+       JOIN users u ON u.email COLLATE utf8mb4_general_ci = jt.email COLLATE utf8mb4_general_ci
+       WHERE wc.config_key = 'approvers' AND u.status = 'active'
+       ORDER BY u.full_name ASC`
+    );
+    const userOptions = userRows.map(u => `<option value="${u.full_name}">${u.full_name}</option>`).join('');
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    res.send(`
+      <html><head><title>Approve Waiver</title><style>${actionPageStyles}</style></head>
+      <body>
+        <div class="card">
+          <div class="icon">📋</div>
+          <div class="waiver-id">${id}</div>
+          <h2>Approve this waiver?</h2>
+          <p>This will mark the waiver as <strong>Approved</strong>. Please confirm before proceeding.</p>
+          <form method="POST" action="${baseUrl}/api/email/waiver/approve-link">
+            <input type="hidden" name="id" value="${id}" />
+            <input type="hidden" name="token" value="${token}" />
+            <label for="approvedBy">Approved By</label>
+            <select name="approvedBy" id="approvedBy" required>
+              <option value="" disabled selected>-- Select your name --</option>
+              ${userOptions}
+            </select>
+            <button type="submit" class="btn-confirm">&#10003; Confirm Approve</button>
+            <button type="button" class="btn-cancel" onclick="window.close()">Cancel</button>
+          </form>
+        </div>
+      </body></html>
+    `);
+  } catch (err) {
+    console.error('Approve link GET error:', err);
+    res.status(500).send('<h2>Server error. Please try again.</h2>');
+  }
+});
+
+async function notifyRequestor(pool, waiverId, status, actionBy, cancelReason) {
+  try {
+    const [rows] = await pool.promise().query(
+      `SELECT w.part_number, w.submitted_by, u.email AS requestor_email
+       FROM waivers w
+       LEFT JOIN users u ON u.full_name COLLATE utf8mb4_general_ci = w.submitted_by COLLATE utf8mb4_general_ci
+       WHERE w.waiver_id = ?`,
+      [waiverId]
+    );
+    const waiver = rows[0];
+    if (!waiver || !waiver.requestor_email) return;
+
+    const isApproved = status === 'Approved';
+    const actionColor = isApproved ? '#28a745' : '#dc3545';
+    const actionLabel = isApproved ? 'Approved' : 'Cancelled';
+
+    await transporter.sendMail({
+      from: '"AMD PDQD System" <noreply@amd.com>',
+      to: waiver.requestor_email,
+      subject: `Waiver ${actionLabel} – # ${waiverId}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
+          <p>Dear ${waiver.submitted_by || 'Requestor'},</p>
+          <p>
+            Your waiver <strong># ${waiverId}</strong>
+            ${waiver.part_number ? `for <strong>${waiver.part_number}</strong>` : ''}
+            has been <strong style="color:${actionColor}">${actionLabel}</strong>
+            ${actionBy ? `by <strong>${actionBy}</strong>` : ''}.
+          </p>
+          ${!isApproved && cancelReason ? `
+            <p style="background:#f8f8f8;padding:12px;border-radius:6px;font-size:14px;">
+              <strong>Reason:</strong> ${cancelReason}
+            </p>
+          ` : ''}
+          <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
+            This is an automated notification from the AMD PDQD System. Please do not reply to this email.
+          </p>
+        </div>
+      `,
+    });
+  } catch (err) {
+    console.error('Failed to notify requestor:', err);
+  }
+}
+
+router.post('/waiver/approve-link', cors({ origin: '*' }), async (req, res) => {
+  const { id, token, approvedBy } = req.body;
+  if (!id || !token) return res.status(400).send('<h2>Missing parameters.</h2>');
+  if (!approvedBy || !approvedBy.trim()) {
+    return res.status(400).send(`
+      <html><body style="font-family:Arial,sans-serif;text-align:center;padding:60px">
+        <h2 style="color:red">Please select your name before approving.</h2>
+        <button onclick="history.back()">Go Back</button>
+      </body></html>
+    `);
+  }
+
+  const expected = crypto.createHmac('sha256', SECRET).update(id).digest('hex');
+  if (token !== expected) {
+    return res.status(403).send(`
+      <html><body style="font-family:Arial,sans-serif;text-align:center;padding:60px">
+        <h2 style="color:red">&#10007; Invalid approval link.</h2>
+      </body></html>
+    `);
+  }
+
+  try {
+    const pool = getGlobalPool();
+    await new Promise((resolve, reject) => {
+      pool.query(
+        `UPDATE waivers SET status = 'Approved', approved_by = ?, updated_at = CURRENT_TIMESTAMP WHERE waiver_id = ?`,
+        [approvedBy.trim(), id],
+        (err) => err ? reject(err) : resolve()
+      );
+    });
+    notifyRequestor(pool, id, 'Approved', approvedBy.trim(), null);
+    res.send(`
+      <html><head><title>Approved</title><style>${actionPageStyles}</style></head>
+      <body>
+        <div class="card">
+          <div class="icon" style="color:#28a745">&#10003;</div>
+          <h2 style="color:#28a745">Waiver Approved</h2>
+          <p><strong>${id}</strong> has been approved by <strong>${approvedBy.trim()}</strong>.</p>
+          <p style="margin-top:16px;color:#aaa;font-size:12px;">You may close this tab.</p>
+        </div>
+      </body></html>
+    `);
+  } catch (err) {
+    console.error('Approve link error:', err);
+    res.status(500).send('<h2>Failed to approve waiver. Please try again.</h2>');
+  }
+});
+
+router.get('/waiver/cancel-link', async (req, res) => {
+  const { id, token } = req.query;
+  if (!id || !token) return res.status(400).send('<h2>Missing parameters.</h2>');
+
+  const expected = crypto.createHmac('sha256', SECRET).update(id).digest('hex');
+  if (token !== expected) {
+    return res.status(403).send(`
+      <html><body style="font-family:Arial,sans-serif;text-align:center;padding:60px">
+        <h2 style="color:red">&#10007; Invalid or expired cancellation link.</h2>
+      </body></html>
+    `);
+  }
+
+  try {
+    const pool = getGlobalPool();
+    const [rows] = await pool.promise().query(
+      `SELECT status, cancel_reason FROM waivers WHERE waiver_id = ?`, [id]
+    );
+    const waiver = rows[0];
+
+    if (!waiver) {
+      return res.status(404).send(`
+        <html><head><style>${actionPageStyles}</style></head>
+        <body><div class="card">
+          <div class="icon">❓</div>
+          <h2 style="color:#888">Waiver Not Found</h2>
+          <p>Waiver <strong>${id}</strong> does not exist.</p>
+        </div></body></html>
+      `);
+    }
+
+    if (waiver.status === 'Cancelled') {
+      return res.send(`
+        <html><head><style>${actionPageStyles}</style></head>
+        <body><div class="card">
+          <div class="icon" style="color:#dc3545">✕</div>
+          <h2 style="color:#dc3545">Already Cancelled</h2>
+          <p>Waiver <strong>${id}</strong> has already been cancelled.</p>
+          ${waiver.cancel_reason ? `<p style="background:#f8f8f8;padding:12px;border-radius:6px;text-align:left;font-size:13px;"><strong>Reason:</strong> ${waiver.cancel_reason}</p>` : ''}
+          <p style="color:#aaa;font-size:12px;margin-top:16px;">You may close this tab.</p>
+        </div></body></html>
+      `);
+    }
+
+    const [userRows] = await pool.promise().query(
+      `SELECT u.full_name
+       FROM waiver_config wc
+       JOIN JSON_TABLE(wc.config_value, '$[*]' COLUMNS (email VARCHAR(255) PATH '$')) jt
+         ON 1=1
+       JOIN users u ON u.email COLLATE utf8mb4_general_ci = jt.email COLLATE utf8mb4_general_ci
+       WHERE wc.config_key = 'approvers' AND u.status = 'active'
+       ORDER BY u.full_name ASC`
+    );
+    const userOptions = userRows.map(u => `<option value="${u.full_name}">${u.full_name}</option>`).join('');
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const alreadyApprovedNote = waiver.status === 'Approved'
+      ? `<p style="background:#fff3cd;border:1px solid #ffc107;padding:10px 14px;border-radius:6px;font-size:13px;color:#856404;margin-bottom:16px;">
+           ⚠️ This waiver is currently <strong>Approved</strong>. Cancelling will override the approval.
+         </p>`
+      : '';
+
+    res.send(`
+      <html><head><title>Cancel Waiver</title><style>${actionPageStyles}</style></head>
+      <body>
+        <div class="card">
+          <div class="icon">⚠️</div>
+          <div class="waiver-id">${id}</div>
+          <h2>Cancel this waiver?</h2>
+          ${alreadyApprovedNote}
+          <p>Please provide your name and a reason for cancellation before submitting.</p>
+          <form method="POST" action="${baseUrl}/api/email/waiver/cancel-link">
+            <input type="hidden" name="id" value="${id}" />
+            <input type="hidden" name="token" value="${token}" />
+            <label for="cancelledBy">Cancelled By</label>
+            <select name="cancelledBy" id="cancelledBy" required>
+              <option value="" disabled selected>-- Select your name --</option>
+              ${userOptions}
+            </select>
+            <label for="cancelReason">Cancellation Reason</label>
+            <textarea name="cancelReason" id="cancelReason" rows="4" placeholder="Enter cancellation reason..." required></textarea>
+            <button type="submit" class="btn-danger">✕ Confirm Cancel</button>
+            <button type="button" class="btn-cancel" onclick="window.close()">Go Back</button>
+          </form>
+        </div>
+      </body></html>
+    `);
+  } catch (err) {
+    console.error('Cancel link GET error:', err);
+    res.status(500).send('<h2>Server error. Please try again.</h2>');
+  }
+});
+
+router.post('/waiver/cancel-link', cors({ origin: '*' }), async (req, res) => {
+  const { id, token, cancelReason, cancelledBy } = req.body;
+  if (!id || !token) return res.status(400).send('<h2>Missing parameters.</h2>');
+  if (!cancelledBy || !cancelledBy.trim()) {
+    return res.status(400).send(`
+      <html><body style="font-family:Arial,sans-serif;text-align:center;padding:60px">
+        <h2 style="color:red">Please select your name before cancelling.</h2>
+        <button onclick="history.back()">Go Back</button>
+      </body></html>
+    `);
+  }
+  if (!cancelReason || !cancelReason.trim()) {
+    return res.status(400).send(`
+      <html><body style="font-family:Arial,sans-serif;text-align:center;padding:60px">
+        <h2 style="color:red">Cancellation reason is required.</h2>
+        <button onclick="history.back()">Go Back</button>
+      </body></html>
+    `);
+  }
+
+  const expected = crypto.createHmac('sha256', SECRET).update(id).digest('hex');
+  if (token !== expected) {
+    return res.status(403).send(`
+      <html><body style="font-family:Arial,sans-serif;text-align:center;padding:60px">
+        <h2 style="color:red">&#10007; Invalid cancellation link.</h2>
+      </body></html>
+    `);
+  }
+
+  try {
+    const pool = getGlobalPool();
+    await new Promise((resolve, reject) => {
+      pool.query(
+        `UPDATE waivers SET status = 'Cancelled', cancel_reason = ?, cancelled_by = ?, updated_at = CURRENT_TIMESTAMP WHERE waiver_id = ?`,
+        [cancelReason.trim(), cancelledBy.trim(), id],
+        (err) => err ? reject(err) : resolve()
+      );
+    });
+    notifyRequestor(pool, id, 'Cancelled', cancelledBy.trim(), cancelReason.trim());
+    res.send(`
+      <html><head><title>Cancelled</title><style>${actionPageStyles}</style></head>
+      <body>
+        <div class="card">
+          <div class="icon" style="color:#dc3545">✕</div>
+          <h2 style="color:#dc3545">Waiver Cancelled</h2>
+          <p><strong>${id}</strong> has been cancelled by <strong>${cancelledBy.trim()}</strong>.</p>
+          <p style="background:#f8f8f8;padding:12px;border-radius:6px;text-align:left;font-size:13px;">
+            <strong>Reason:</strong> ${cancelReason.trim()}
+          </p>
+          <p style="margin-top:16px;color:#aaa;font-size:12px;">You may close this tab.</p>
+        </div>
+      </body></html>
+    `);
+  } catch (err) {
+    console.error('Cancel link error:', err);
+    res.status(500).send('<h2>Failed to cancel waiver. Please try again.</h2>');
+  }
+});
+
+
+router.post('/waiver/status-notify', async (req, res) => {
+  const { waiverId, status, actionBy, cancelReason } = req.body;
+  if (!waiverId || !status) return res.status(400).json({ error: 'Missing waiverId or status' });
+
+  try {
+    const pool = getGlobalPool();
+    const [rows] = await pool.promise().query(
+      `SELECT w.waiver_id, w.part_number, w.submitted_by, u.email AS requestor_email
+       FROM waivers w
+       LEFT JOIN users u ON u.full_name COLLATE utf8mb4_general_ci = w.submitted_by COLLATE utf8mb4_general_ci
+       WHERE w.waiver_id = ?`,
+      [waiverId]
+    );
+
+    const waiver = rows[0];
+    if (!waiver || !waiver.requestor_email) {
+      return res.json({ success: false, message: 'Requestor email not found' });
+    }
+
+    const isApproved = status === 'Approved';
+    const subject = isApproved
+      ? `Waiver Approved – # ${waiverId}`
+      : `Waiver Cancelled – # ${waiverId}`;
+
+    const actionColor = isApproved ? '#28a745' : '#dc3545';
+    const actionIcon = isApproved ? '✓' : '✕';
+    const actionLabel = isApproved ? 'Approved' : 'Cancelled';
+
+    const bodyHtml = `
+      <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
+        <p>Dear ${waiver.submitted_by || 'Requestor'},</p>
+        <p>
+          Your waiver <strong># ${waiverId}</strong>
+          ${waiver.part_number ? `for <strong>${waiver.part_number}</strong>` : ''}
+          has been <strong style="color:${actionColor}">${actionLabel}</strong>
+          ${actionBy ? `by <strong>${actionBy}</strong>` : ''}.
+        </p>
+        ${!isApproved && cancelReason ? `
+          <p style="background:#f8f8f8;padding:12px;border-radius:6px;font-size:14px;">
+            <strong>Reason:</strong> ${cancelReason}
+          </p>
+        ` : ''}
+        <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
+          This is an automated notification from the AMD PDQD System. Please do not reply to this email.
+        </p>
+      </div>
+    `;
+
+    await transporter.sendMail({
+      from: '"AMD PDQD System" <noreply@amd.com>',
+      to: waiver.requestor_email,
+      subject,
+      html: bodyHtml,
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Waiver status notification failed:', err);
     res.status(500).json({ error: 'Email failed' });
   }
 });

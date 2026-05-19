@@ -73,31 +73,45 @@ app.use(helmet({
 // Compression middleware
 app.use(compression());
 
+// Bypass CORS for email action routes (HTML form submissions from server-rendered pages)
+app.use(['/api/email/waiver/approve-link', '/api/email/waiver/cancel-link'], (req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
 // CORS middleware - Production configuration
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
-  : ['http://localhost:3000']; // Fallback for development
+  : ['http://localhost:3000', 'http://localhost:5000']; // Fallback for development
 
-app.use(cors({
+const emailActionPaths = ['/api/email/waiver/approve-link', '/api/email/waiver/cancel-link'];
+
+const corsMiddleware = cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
-
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true, // Allow credentials for authentication
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'],
   allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
   exposedHeaders: ['Content-Length', 'X-Foo', 'X-Bar'],
-  optionsSuccessStatus: 200 // For legacy browser support
-}));
+  optionsSuccessStatus: 200
+});
 
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use((req, res, next) => {
+  if (emailActionPaths.includes(req.path)) return next();
+  corsMiddleware(req, res, next);
+});
+
+app.use(express.json({ limit: '30mb' }));
+app.use(express.urlencoded({ extended: true, limit: '30mb' }));
 
 // Additional global CORS middleware to ensure all responses have permissive headers
 app.use((req, res, next) => {
@@ -170,6 +184,40 @@ app.post("/api/upload", draft.single("file"), (req, res) => {
     console.error("Upload failed:", err);
     res.status(500).json({ error: "Upload failed" });
   }
+});
+
+
+const crypto = require('crypto');
+const SECRET = process.env.WAIVER_SECRET || 'amd-iqa-secret-key';
+
+app.get('/api/waivers/approve-link', async (req, res) => {
+    const { id, token } = req.query;
+    if (!id || !token) return res.status(400).send('<h2>Missing parameters.</h2>');
+
+    const expected = crypto.createHmac('sha256', SECRET).update(id).digest('hex');
+    if (token !== expected) {
+        return res.status(403).send(`
+            <html><body style="font-family:sans-serif;text-align:center;padding:60px">
+                <h2 style="color:red">Invalid or expired approval link.</h2>
+            </body></html>
+        `);
+    }
+
+    try {
+        await db.query(
+            `UPDATE waivers SET status = 'Approved', updated_at = CURRENT_TIMESTAMP WHERE waiver_id = ?`,
+            [id]
+        );
+        res.send(`
+            <html><body style="font-family:sans-serif;text-align:center;padding:60px">
+                <h2 style="color:green">&#10003; Waiver ${id} has been approved.</h2>
+                <p>You may close this tab.</p>
+            </body></html>
+        `);
+    } catch (err) {
+        console.error('Approve link error:', err);
+        res.status(500).send('<h2>Failed to approve. Please try again.</h2>');
+    }
 });
 
 
@@ -4597,7 +4645,7 @@ app.get('/api/waivers/pending', async (req, res) => {
   try {
     connection = await db.promise().getConnection();
     const [rows] = await connection.query(
-      `SELECT waiver_id, part_number, submitted_by, submitted_at, status, cancel_reason, cancelled_by
+      `SELECT waiver_id, part_number, submitted_by, submitted_at, status, cancel_reason, cancelled_by, approved_by
         FROM waivers
         ORDER BY submitted_at DESC;`
     );
@@ -4613,7 +4661,7 @@ app.get('/api/waivers/pending', async (req, res) => {
 // PATCH waiver status (Approved / Rejected / Cancelled)
 app.patch('/api/waivers/:waiverId/status', async (req, res) => {
   const { waiverId } = req.params;
-  const { status, reason, cancelledBy } = req.body;
+  const { status, reason, cancelledBy, approvedBy } = req.body;
 
   const allowed = ['Approved', 'Closed', 'Cancelled'];
   if (!allowed.includes(status)) {
@@ -4624,9 +4672,9 @@ app.patch('/api/waivers/:waiverId/status', async (req, res) => {
   try {
     connection = await db.promise().getConnection();
     await connection.execute(
-      `UPDATE waivers SET status = ?, cancel_reason = ?, cancelled_by = ?, updated_at = CURRENT_TIMESTAMP
+      `UPDATE waivers SET status = ?, cancel_reason = ?, cancelled_by = ?, approved_by = ?, updated_at = CURRENT_TIMESTAMP
        WHERE waiver_id = ?`,
-      [status, reason || null, cancelledBy || null, waiverId]
+      [status, reason || null, cancelledBy || null, approvedBy || null, waiverId]
     );
     res.json({ success: true, waiverId, status });
   } catch (error) {

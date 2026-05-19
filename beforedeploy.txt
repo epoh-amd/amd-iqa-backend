@@ -276,3 +276,5 @@ add in ssh in .env file
 
 
 ALTER TABLE waivers ADD COLUMN modified_by VARCHAR(255) NULL;
+
+ALTER TABLE waivers ADD COLUMN approved_by VARCHAR(255) NULL;

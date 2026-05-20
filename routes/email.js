@@ -884,13 +884,13 @@ router.get('/waiver/approve-link', async (req, res) => {
       `);
     }
 
-    if (waiver.status === 'Cancelled') {
+    if (waiver.status === 'Rejected') {
       return res.send(`
         <html><head><style>${actionPageStyles}</style></head>
         <body><div class="card">
           <div class="icon" style="color:#dc3545">✕</div>
-          <h2 style="color:#dc3545">Waiver Already Cancelled</h2>
-          <p>Waiver <strong>${id}</strong> has been cancelled and cannot be approved.</p>
+          <h2 style="color:#dc3545">Waiver Already Rejected</h2>
+          <p>Waiver <strong>${id}</strong> has been rejected and cannot be approved.</p>
           ${waiver.cancel_reason ? `<p style="background:#f8f8f8;padding:12px;border-radius:6px;text-align:left;font-size:13px;"><strong>Reason:</strong> ${waiver.cancel_reason}</p>` : ''}
           <p style="color:#aaa;font-size:12px;margin-top:16px;">You may close this tab.</p>
         </div></body></html>
@@ -951,7 +951,7 @@ async function notifyRequestor(pool, waiverId, status, actionBy, cancelReason) {
 
     const isApproved = status === 'Approved';
     const actionColor = isApproved ? '#28a745' : '#dc3545';
-    const actionLabel = isApproved ? 'Approved' : 'Cancelled';
+    const actionLabel = isApproved ? 'Approved' : 'Rejected';
 
     await transporter.sendMail({
       from: '"AMD PDQD System" <noreply@amd.com>',
@@ -1061,13 +1061,13 @@ router.get('/waiver/cancel-link', async (req, res) => {
       `);
     }
 
-    if (waiver.status === 'Cancelled') {
+    if (waiver.status === 'Rejected') {
       return res.send(`
         <html><head><style>${actionPageStyles}</style></head>
         <body><div class="card">
           <div class="icon" style="color:#dc3545">✕</div>
-          <h2 style="color:#dc3545">Already Cancelled</h2>
-          <p>Waiver <strong>${id}</strong> has already been cancelled.</p>
+          <h2 style="color:#dc3545">Already Rejected</h2>
+          <p>Waiver <strong>${id}</strong> has already been rejected.</p>
           ${waiver.cancel_reason ? `<p style="background:#f8f8f8;padding:12px;border-radius:6px;text-align:left;font-size:13px;"><strong>Reason:</strong> ${waiver.cancel_reason}</p>` : ''}
           <p style="color:#aaa;font-size:12px;margin-top:16px;">You may close this tab.</p>
         </div></body></html>
@@ -1098,20 +1098,20 @@ router.get('/waiver/cancel-link', async (req, res) => {
         <div class="card">
           <div class="icon">⚠️</div>
           <div class="waiver-id">${id}</div>
-          <h2>Cancel this waiver?</h2>
+          <h2>Reject this waiver?</h2>
           ${alreadyApprovedNote}
-          <p>Please provide your name and a reason for cancellation before submitting.</p>
+          <p>Please provide your name and a reason for rejection before submitting.</p>
           <form method="POST" action="${baseUrl}/api/email/waiver/cancel-link">
             <input type="hidden" name="id" value="${id}" />
             <input type="hidden" name="token" value="${token}" />
-            <label for="cancelledBy">Cancelled By</label>
+            <label for="cancelledBy">Rejected By</label>
             <select name="cancelledBy" id="cancelledBy" required>
               <option value="" disabled selected>-- Select your name --</option>
               ${userOptions}
             </select>
-            <label for="cancelReason">Cancellation Reason</label>
-            <textarea name="cancelReason" id="cancelReason" rows="4" placeholder="Enter cancellation reason..." required></textarea>
-            <button type="submit" class="btn-danger">✕ Confirm Cancel</button>
+            <label for="cancelReason">Rejection Reason</label>
+            <textarea name="cancelReason" id="cancelReason" rows="4" placeholder="Enter rejection reason..." required></textarea>
+            <button type="submit" class="btn-danger">✕ Confirm Reject</button>
             <button type="button" class="btn-cancel" onclick="window.close()">Go Back</button>
           </form>
         </div>
@@ -1156,19 +1156,19 @@ router.post('/waiver/cancel-link', cors({ origin: '*' }), async (req, res) => {
     const pool = getGlobalPool();
     await new Promise((resolve, reject) => {
       pool.query(
-        `UPDATE waivers SET status = 'Cancelled', cancel_reason = ?, cancelled_by = ?, updated_at = CURRENT_TIMESTAMP WHERE waiver_id = ?`,
+        `UPDATE waivers SET status = 'Rejected', cancel_reason = ?, cancelled_by = ?, updated_at = CURRENT_TIMESTAMP WHERE waiver_id = ?`,
         [cancelReason.trim(), cancelledBy.trim(), id],
         (err) => err ? reject(err) : resolve()
       );
     });
-    notifyRequestor(pool, id, 'Cancelled', cancelledBy.trim(), cancelReason.trim());
+    notifyRequestor(pool, id, 'Rejected', cancelledBy.trim(), cancelReason.trim());
     res.send(`
-      <html><head><title>Cancelled</title><style>${actionPageStyles}</style></head>
+      <html><head><title>Rejected</title><style>${actionPageStyles}</style></head>
       <body>
         <div class="card">
           <div class="icon" style="color:#dc3545">✕</div>
-          <h2 style="color:#dc3545">Waiver Cancelled</h2>
-          <p><strong>${id}</strong> has been cancelled by <strong>${cancelledBy.trim()}</strong>.</p>
+          <h2 style="color:#dc3545">Waiver Rejected</h2>
+          <p><strong>${id}</strong> has been rejected by <strong>${cancelledBy.trim()}</strong>.</p>
           <p style="background:#f8f8f8;padding:12px;border-radius:6px;text-align:left;font-size:13px;">
             <strong>Reason:</strong> ${cancelReason.trim()}
           </p>
@@ -1178,7 +1178,7 @@ router.post('/waiver/cancel-link', cors({ origin: '*' }), async (req, res) => {
     `);
   } catch (err) {
     console.error('Cancel link error:', err);
-    res.status(500).send('<h2>Failed to cancel waiver. Please try again.</h2>');
+    res.status(500).send('<h2>Failed to reject waiver. Please try again.</h2>');
   }
 });
 
@@ -1205,11 +1205,11 @@ router.post('/waiver/status-notify', async (req, res) => {
     const isApproved = status === 'Approved';
     const subject = isApproved
       ? `Waiver Approved – # ${waiverId}`
-      : `Waiver Cancelled – # ${waiverId}`;
+      : `Waiver Rejected – # ${waiverId}`;
 
     const actionColor = isApproved ? '#28a745' : '#dc3545';
     const actionIcon = isApproved ? '✓' : '✕';
-    const actionLabel = isApproved ? 'Approved' : 'Cancelled';
+    const actionLabel = isApproved ? 'Approved' : 'Rejected';
 
     const bodyHtml = `
       <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">

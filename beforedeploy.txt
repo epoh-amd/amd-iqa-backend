@@ -284,3 +284,16 @@ chmod 777 drafts in drafts folder
 
 modify the frontend src .env.production file to
 REACT_APP_BACKEND_URL= https://test.iqadashboard.amd.com
+
+
+ALTER TABLE waivers 
+MODIFY COLUMN status ENUM('New','Approved','Cancelled','Closed','Rejected');
+
+UPDATE waivers SET status = 'Rejected' WHERE status = 'Cancelled';
+
+ALTER TABLE waivers 
+modify COLUMN status ENUM('New','Approved','Closed','Rejected');
+
+
+ALTER TABLE waivers 
+modify COLUMN status ENUM('New','Approved','Closed','Rejected', 'Cancelled');

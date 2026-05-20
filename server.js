@@ -274,7 +274,7 @@ const dbConfig = {
 
   // Performance optimizations
   charset: 'utf8mb4',
-  timezone: 'Z',
+  timezone: '+08:00',
   multipleStatements: false,        // Security
   reconnect: true,                  // Auto-reconnect
 
@@ -4664,7 +4664,7 @@ app.patch('/api/waivers/:waiverId/status', async (req, res) => {
   const { waiverId } = req.params;
   const { status, reason, cancelledBy, approvedBy } = req.body;
 
-  const allowed = ['Approved', 'Closed', 'Cancelled'];
+  const allowed = ['Approved', 'Closed', 'Cancelled', 'Rejected'];
   if (!allowed.includes(status)) {
     return res.status(400).json({ error: `Invalid status: ${status}` });
   }
@@ -4889,6 +4889,7 @@ app.post('/api/waivers/submit', async (req, res) => {
          workorder      = VALUES(workorder),
          workorder_qty  = VALUES(workorder_qty),
          submitted_by   = VALUES(submitted_by),
+         status         = 'New',
          updated_at     = CURRENT_TIMESTAMP`,
       [
         waiverId, partNumber, revision, description, subcontractor,

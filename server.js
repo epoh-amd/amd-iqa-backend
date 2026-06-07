@@ -965,6 +965,8 @@ app.post('/api/extract-log', async (req, res) => {
   
   const fs = require('fs');
   const tempDir = path.join(__dirname, 'uploads', 'temp');
+  console.log('dirname', __dirname);
+  console.log('tempdir', tempDir);
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
   try {

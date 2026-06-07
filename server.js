@@ -494,6 +494,8 @@ app.use('/uploads', (req, res, next) => {
 
   const filePath = path.join(__dirname, 'uploads', req.path);
 
+  //console.log('__dirname =', __dirname);
+
   console.log('Static file request:', {
     requestPath: req.path,
     fullPath: filePath,
@@ -941,6 +943,19 @@ app.get('/api/log-file-exists/:bmcName', (req, res) => {
   const fileName = `${bmcName}-os-system-checks.log`;
   const filePath = path.join(__dirname, 'uploads', fileName);
   res.json({ exists: fs.existsSync(filePath), fileName });
+});
+
+// Batch check: POST /api/log-files-exist { bmcNames: [...] }
+app.post('/api/log-files-exist', (req, res) => {
+  const { bmcNames = [] } = req.body;
+  const result = {};
+  bmcNames.forEach(name => {
+    if (!name) return;
+    const normalized = name.toLowerCase();
+    const filePath = path.join(__dirname, 'uploads', `${normalized}-os-system-checks.log`);
+    result[normalized] = fs.existsSync(filePath);
+  });
+  res.json(result);
 });
 
 app.post('/api/extract-log', async (req, res) => {

@@ -936,6 +936,13 @@ app.get('/api/projects', async (req, res) => {
 
 const SftpClient = require('ssh2-sftp-client');
 
+app.get('/api/log-file-exists/:bmcName', (req, res) => {
+  const { bmcName } = req.params;
+  const fileName = `${bmcName}-os-system-checks.log`;
+  const filePath = path.join(__dirname, 'uploads', fileName);
+  res.json({ exists: fs.existsSync(filePath), fileName });
+});
+
 app.post('/api/extract-log', async (req, res) => {
   const { chassisSN, bmcName } = req.body;
   console.log("bmcname:"+ bmcName);
@@ -947,10 +954,9 @@ app.post('/api/extract-log', async (req, res) => {
 
   try {
     const sshHost = `${bmcName.toLowerCase()}-os`;
+    //const sshHost = 'congo-1196-os';
     const filename = `${sshHost}-system-checks.log`;
     const localPath = path.join(tempDir, filename);
-
-    //const sshHost = 'seagull-0050-os';
 
     await sftp.connect({
       host: sshHost,
@@ -961,14 +967,18 @@ app.post('/api/extract-log', async (req, res) => {
     });
 
     //await sftp.fastGet('/home/root/test.log', localPath);
-   await sftp.fastGet(`/home/root/system-checks/${filename}`, localPath);
+    await sftp.fastGet(`/system-checks/${filename}`, localPath);
 
     await sftp.end();
 
     res.json({ success: true, filename });
   } catch (err) {
-    console.error('SSH extract error:', err);
-    res.status(500).json({ error: 'Failed to extract log', message: err.message });
+    console.error('SSH extract error message:', err.message);
+    console.error('SSH extract error code:', err.code);
+    console.error('SSH extract error level:', err.level);
+    console.error('SSH extract error stack:', err.stack);
+    console.error('SSH extract full error:', JSON.stringify(err, null, 2));
+    res.status(500).json({ error: 'Failed to extract log', message: err.message, code: err.code, level: err.level });
   }
 });
 
@@ -4686,6 +4696,40 @@ app.patch('/api/waivers/:waiverId/status', async (req, res) => {
 });
 
 
+// DELETE /api/builds/:chassisSN — delete a build and all related records
+app.delete('/api/builds/:chassisSN', async (req, res) => {
+  const { chassisSN } = req.params;
+  if (!chassisSN) return res.status(400).json({ error: 'chassisSN is required' });
+
+  let connection;
+  try {
+    connection = await db.promise().getConnection();
+    await connection.beginTransaction();
+
+    await connection.execute('DELETE FROM dimm_serial_numbers WHERE chassis_sn = ?', [chassisSN]);
+    await connection.execute('DELETE FROM build_photos WHERE chassis_sn = ?', [chassisSN]);
+    await connection.execute('DELETE FROM build_failures WHERE chassis_sn = ?', [chassisSN]);
+    await connection.execute('DELETE FROM rework_history WHERE chassis_sn = ?', [chassisSN]);
+    await connection.execute('DELETE FROM rework_pass WHERE chassis_sn = ?', [chassisSN]);
+    await connection.execute('DELETE FROM master_builds WHERE chassis_sn = ?', [chassisSN]);
+    const [result] = await connection.execute('DELETE FROM builds WHERE chassis_sn = ?', [chassisSN]);
+
+    if (result.affectedRows === 0) {
+      await connection.rollback();
+      return res.status(404).json({ error: 'Build not found' });
+    }
+
+    await connection.commit();
+    res.json({ success: true, message: `Build ${chassisSN} deleted` });
+  } catch (err) {
+    if (connection) await connection.rollback();
+    console.error('Error deleting build:', err);
+    res.status(500).json({ error: 'Failed to delete build' });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 // DELETE /api/waivers/:waiverId — delete a waiver and all its related rows
 app.delete("/api/waivers/:waiverId", async (req, res) => {
   const { waiverId } = req.params;
@@ -7175,6 +7219,23 @@ app.post('/api/addprojects', async (req, res) => {
   } catch (err) {
     console.error('Add project error:', err);
     res.status(500).json({ error: 'Failed to add project' });
+  }
+});
+
+// DELETE /api/projects/:name
+app.delete('/api/projects/:name', async (req, res) => {
+  const project_name = decodeURIComponent(req.params.name).trim();
+  if (!project_name) return res.status(400).json({ error: 'Project name is required' });
+  try {
+    const [result] = await db.promise().execute(
+      'DELETE FROM project_name WHERE project_name = ?',
+      [project_name]
+    );
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Project not found' });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete project error:', err);
+    res.status(500).json({ error: 'Failed to delete project' });
   }
 });
 

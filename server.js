@@ -4713,6 +4713,26 @@ app.patch('/api/waivers/:waiverId/status', async (req, res) => {
 });
 
 
+// Public: search users by email/name for autocomplete (no auth required)
+app.get('/api/users/search-email', async (req, res) => {
+  const { q } = req.query;
+  if (!q || q.trim().length < 1) return res.json([]);
+  try {
+    const [rows] = await db.promise().query(
+      `SELECT email, full_name FROM users
+       WHERE status = 'active'
+         AND (email LIKE ? OR full_name LIKE ?)
+       ORDER BY full_name ASC
+       LIMIT 10`,
+      [`%${q}%`, `%${q}%`]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error searching user emails:', err);
+    res.status(500).json({ error: 'Search failed' });
+  }
+});
+
 // DELETE /api/builds/:chassisSN — delete a build and all related records
 app.delete('/api/builds/:chassisSN', async (req, res) => {
   const { chassisSN } = req.params;

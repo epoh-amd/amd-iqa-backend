@@ -4715,6 +4715,7 @@ app.patch('/api/waivers/:waiverId/status', async (req, res) => {
 
 // Public: search users by email/name for autocomplete (no auth required)
 app.get('/api/users/search-email', async (req, res) => {
+  
   const { q } = req.query;
   if (!q || q.trim().length < 1) return res.json([]);
   try {

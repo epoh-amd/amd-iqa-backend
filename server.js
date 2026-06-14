@@ -2095,54 +2095,54 @@ app.get('/api/dashboard/quality-data/:projectName', (req, res) => {
 
     // STEP 2: Get quality data
     const query = `
-     SELECT *
-      FROM (
-        SELECT
-          b.platform_type,
-          b.chassis_sn,
-          bf.failure_mode,
-          bf.failure_category
-        FROM builds b
-        LEFT JOIN build_failures bf 
-          ON b.chassis_sn = bf.chassis_sn
-        WHERE b.project_name = ?
-          AND (UPPER(b.platform_type) LIKE '%PRB%' OR UPPER(b.platform_type) LIKE '%VRB%')
+     SELECT
+    b.platform_type,
+    b.chassis_sn,
 
-        UNION ALL
+    COALESCE(rf.failure_mode, bf.failure_mode) AS failure_mode,
+    COALESCE(rf.failure_category, bf.failure_category) AS failure_category
 
-        SELECT
-          b.platform_type,
-          rh.chassis_sn,
-          rf.failure_mode,
-          rf.failure_category
-        FROM rework_history rh
-        JOIN rework_failures rf ON rh.id = rf.rework_id
-        JOIN builds b ON b.chassis_sn = rh.chassis_sn
-        WHERE b.project_name = ?
-          AND (UPPER(b.platform_type) LIKE '%PRB%' OR UPPER(b.platform_type) LIKE '%VRB%')
-      ) combined
-      WHERE
-        failure_mode IS NOT NULL
-        OR NOT EXISTS (
-          SELECT 1
-          FROM (
-            SELECT
-              b.chassis_sn,
-              bf.failure_mode
-            FROM builds b
-            LEFT JOIN build_failures bf ON b.chassis_sn = bf.chassis_sn
+FROM builds b
 
-            UNION ALL
+/* build failures (may be many → we reduce later) */
+LEFT JOIN build_failures bf
+    ON bf.id = (
+        SELECT bf2.id
+        FROM build_failures bf2
+        WHERE bf2.chassis_sn = b.chassis_sn
+        ORDER BY bf2.id DESC
+        LIMIT 1
+    )
 
-            SELECT
-              rh.chassis_sn,
-              rf.failure_mode
-            FROM rework_history rh
-            JOIN rework_failures rf ON rh.id = rf.rework_id
-          ) t2
-          WHERE t2.chassis_sn = combined.chassis_sn
-            AND t2.failure_mode IS NOT NULL
-        )
+/* latest rework */
+LEFT JOIN (
+    SELECT rh1.*
+    FROM rework_history rh1
+    JOIN (
+        SELECT chassis_sn, MAX(rework_date) AS latest_rework_date
+        FROM rework_history
+        GROUP BY chassis_sn
+    ) rh2
+      ON rh1.chassis_sn = rh2.chassis_sn
+     AND rh1.rework_date = rh2.latest_rework_date
+) rh
+    ON rh.chassis_sn = b.chassis_sn
+
+/* latest failure per rework */
+LEFT JOIN rework_failures rf
+    ON rf.id = (
+        SELECT rf2.id
+        FROM rework_failures rf2
+        WHERE rf2.rework_id = rh.id
+        ORDER BY rf2.id DESC
+        LIMIT 1
+    )
+
+WHERE b.project_name = ?
+  AND (
+        UPPER(b.platform_type) LIKE '%PRB%'
+        OR UPPER(b.platform_type) LIKE '%VRB%'
+      );
     `;
 
     db.query(query, [projectId, projectId], (err, results) => {
@@ -3139,6 +3139,9 @@ app.post('/api/builds/batch/export', async (req, res) => {
 
   const placeholders = chassisList.map(() => '?').join(',');
 
+  // =========================
+  // BUILD QUERY (UNCHANGED)
+  // =========================
   const buildQuery = `
     SELECT
       b.chassis_sn,
@@ -3166,14 +3169,14 @@ app.post('/api/builds/batch/export', async (req, res) => {
       b.dimm_pn,
       b.dimm_qty,
 
-      COALESCE(ANY_VALUE(rh.original_visual_inspection),       b.visual_inspection_status) AS visual_inspection_status,
-      COALESCE(ANY_VALUE(rh.original_visual_inspection_notes), b.visual_inspection_notes)  AS visual_inspection_notes,
-      COALESCE(ANY_VALUE(rh.original_boot_status),             b.boot_status)              AS boot_status,
-      COALESCE(ANY_VALUE(rh.original_boot_notes),              b.boot_notes)               AS boot_notes,
-      COALESCE(ANY_VALUE(rh.original_dimms_detected),          b.dimms_detected_status)    AS dimms_detected_status,
-      COALESCE(ANY_VALUE(rh.original_dimms_detected_notes),    b.dimms_detected_notes)     AS dimms_detected_notes,
-      COALESCE(ANY_VALUE(rh.original_lom_working),             b.lom_working_status)       AS lom_working_status,
-      COALESCE(ANY_VALUE(rh.original_lom_working_notes),       b.lom_working_notes)        AS lom_working_notes,
+      COALESCE(ANY_VALUE(rh.original_visual_inspection), b.visual_inspection_status) AS visual_inspection_status,
+      COALESCE(ANY_VALUE(rh.original_visual_inspection_notes), b.visual_inspection_notes) AS visual_inspection_notes,
+      COALESCE(ANY_VALUE(rh.original_boot_status), b.boot_status) AS boot_status,
+      COALESCE(ANY_VALUE(rh.original_boot_notes), b.boot_notes) AS boot_notes,
+      COALESCE(ANY_VALUE(rh.original_dimms_detected), b.dimms_detected_status) AS dimms_detected_status,
+      COALESCE(ANY_VALUE(rh.original_dimms_detected_notes), b.dimms_detected_notes) AS dimms_detected_notes,
+      COALESCE(ANY_VALUE(rh.original_lom_working), b.lom_working_status) AS lom_working_status,
+      COALESCE(ANY_VALUE(rh.original_lom_working_notes), b.lom_working_notes) AS lom_working_notes,
 
       b.fpy_status,
       b.can_continue,
@@ -3201,31 +3204,55 @@ app.post('/api/builds/batch/export', async (req, res) => {
     LEFT JOIN rework_history rh
       ON b.chassis_sn = rh.chassis_sn
       AND rh.id = (
-        SELECT id FROM rework_history
+        SELECT id
+        FROM rework_history
         WHERE chassis_sn = b.chassis_sn
         ORDER BY id DESC
         LIMIT 1
       )
 
     WHERE b.chassis_sn IN (${placeholders})
+
     GROUP BY b.chassis_sn
   `;
 
+  // =========================
+  // FAILURE QUERY (FIXED)
+  // =========================
   const failureQuery = `
-    SELECT chassis_sn, failure_mode, failure_category
+    SELECT
+      chassis_sn,
+      failure_mode,
+      failure_category
     FROM (
-      SELECT bf.chassis_sn, bf.failure_mode, bf.failure_category
-      FROM build_failures bf
-      WHERE bf.chassis_sn IN (${placeholders})
+      SELECT
+        chassis_sn,
+        failure_mode,
+        failure_category,
+        ROW_NUMBER() OVER (PARTITION BY chassis_sn ORDER BY sort_id DESC) AS rn
+      FROM (
+        SELECT
+          bf.chassis_sn,
+          bf.failure_mode,
+          bf.failure_category,
+          bf.id AS sort_id
+        FROM build_failures bf
+        WHERE bf.chassis_sn IN (${placeholders})
 
-      UNION ALL
+        UNION ALL
 
-      SELECT rh.chassis_sn, rf.failure_mode, rf.failure_category
-      FROM rework_history rh
-      JOIN rework_failures rf ON rh.id = rf.rework_id
-      WHERE rh.chassis_sn IN (${placeholders})
-    ) combined
-    WHERE failure_mode IS NOT NULL
+        SELECT
+          rh.chassis_sn,
+          rf.failure_mode,
+          rf.failure_category,
+          rf.id AS sort_id
+        FROM rework_history rh
+        JOIN rework_failures rf
+          ON rh.id = rf.rework_id
+        WHERE rh.chassis_sn IN (${placeholders})
+      ) combined
+    ) ranked
+    WHERE rn = 1
   `;
 
   try {
@@ -3235,45 +3262,56 @@ app.post('/api/builds/batch/export', async (req, res) => {
         return res.status(500).json({ error: 'Database error' });
       }
 
-      db.query(failureQuery, [...chassisList, ...chassisList], (err, failureResults) => {
-        if (err) {
-          console.error('Batch failure query error:', err);
-          return res.status(500).json({ error: 'Database error' });
-        }
+      db.query(
+        failureQuery,
+        [...chassisList, ...chassisList],
+        (err, failureResults) => {
+          if (err) {
+            console.error('Batch failure query error:', err);
+            return res.status(500).json({ error: 'Database error' });
+          }
 
-        // Group failures by chassis_sn
-        const failureMap = {};
-        (failureResults || []).forEach(f => {
-          if (!failureMap[f.chassis_sn]) failureMap[f.chassis_sn] = [];
-          failureMap[f.chassis_sn].push({
-            failure_mode: f.failure_mode,
-            failure_category: f.failure_category
+          // =========================
+          // MAP latest failures
+          // =========================
+          const failureMap = {};
+          (failureResults || []).forEach(f => {
+            failureMap[f.chassis_sn] = {
+              failure_mode: f.failure_mode,
+              failure_category: f.failure_category
+            };
           });
-        });
 
-        // Merge failures into each build
-        const response = buildResults.map(build => {
-          const dimmSNs = build.dimm_sns ? build.dimm_sns.split(',') : [];
-          const failures = failureMap[build.chassis_sn] || [];
-          const { dimm_sns, ...rest } = build;
+          // =========================
+          // BUILD RESPONSE
+          // =========================
+          const response = buildResults.map(build => {
+            const dimmSNs = build.dimm_sns
+              ? build.dimm_sns.split(',')
+              : [];
 
-          return {
-            ...rest,
-            dimmSNs,
-            failures,
-          };
-        });
+            const latestFailure = failureMap[build.chassis_sn] || null;
 
-        res.json(response);
-      });
+            const { dimm_sns, ...rest } = build;
+
+            return {
+              ...rest,
+              dimmSNs,
+              failures: latestFailure ? [latestFailure] : [],
+              latest_failure_mode: latestFailure?.failure_mode || null,
+              latest_failure_category: latestFailure?.failure_category || null
+            };
+          });
+
+          res.json(response);
+        }
+      );
     });
   } catch (err) {
     console.error('Batch export error:', err);
     res.status(500).json({ error: 'Batch export failed' });
   }
 });
-
-
 
 // ============================================================================
 // EDIT BUILD DATA API ENDPOINTS
@@ -4799,6 +4837,18 @@ app.delete("/api/waivers/:waiverId", async (req, res) => {
   }
 });
 
+app.get('/api/waivers/all', async (req, res) => {
+  try {
+    const [rows] = await db.promise().query(
+      `SELECT * FROM waivers ORDER BY submitted_at DESC`
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching all waivers:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 app.get('/api/waivers/my/:full_name', async (req, res) => {
   const { full_name } = req.params;
   try {
@@ -4856,8 +4906,10 @@ const toDateOnly = (val) => val ? val.toString().slice(0, 10) : null;
          updated_at     = CURRENT_TIMESTAMP
        WHERE waiver_id = ?`,
       [
-        partNumber, revision, description, subcontractor,
-        assemblyLevel, requestor, toDateOnly(startDate),   // ← was: startDate || null
+        partNumber, revision, description,
+        Array.isArray(subcontractor) ? JSON.stringify(subcontractor) : subcontractor,
+        Array.isArray(assemblyLevel) ? JSON.stringify(assemblyLevel) : assemblyLevel,
+        requestor, toDateOnly(startDate),
         toDateOnly(endDate), 
         JSON.stringify(waiverType || []),
         reason, workorder, workorderQty || null,
@@ -4876,11 +4928,13 @@ const toDateOnly = (val) => val ? val.toString().slice(0, 10) : null;
         await connection.execute(
           `INSERT INTO waiver_material_rows
              (waiver_id, sort_order, current_part, current_part_description,
+              no_of_per, refdes,
               new_part, new_part_description, action, instructions, file_path)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             waiverId, i,
             r.currentPart || null, r.currentPartDescription || null,
+            r.noOfPer || null, r.refdes || null,
             r.newPart || null, r.newPartDescription || null,
             r.action || null, r.instructions || null, r.file || null
           ]
@@ -4890,8 +4944,8 @@ const toDateOnly = (val) => val ? val.toString().slice(0, 10) : null;
 
     // 3. Update sections
     const sections = [
-      { type: 'process', data: processData, extra: null },
-      { type: 'test',    data: testData,    extra: JSON.stringify({ currentPart: testData?.currentPart, toBePart: testData?.toBePart }) },
+      { type: 'process', data: processData, extra: JSON.stringify({ areas: processData?.areas, areaInstructions: processData?.areaInstructions, areaFiles: processData?.areaFiles }) },
+      { type: 'test',    data: testData,    extra: JSON.stringify({ rows: testData?.rows, areas: testData?.areas, areaInstructions: testData?.areaInstructions, areaFiles: testData?.areaFiles }) },
       { type: 'spec',    data: specData,    extra: JSON.stringify({ specImpact: specData?.specImpact }) },
       { type: 'rework',  data: reworkData,  extra: null },
       { type: 'label',   data: labelData,   extra: null },
@@ -4974,8 +5028,10 @@ app.post('/api/waivers/submit', async (req, res) => {
          status         = 'New',
          updated_at     = CURRENT_TIMESTAMP`,
       [
-        waiverId, partNumber, revision, description, subcontractor,
-        assemblyLevel, requestor, startDate || null, endDate || null,
+        waiverId, partNumber, revision, description,
+        Array.isArray(subcontractor) ? JSON.stringify(subcontractor) : subcontractor,
+        Array.isArray(assemblyLevel) ? JSON.stringify(assemblyLevel) : assemblyLevel,
+        requestor, startDate || null, endDate || null,
         JSON.stringify(waiverType || []),
         reason, workorder, workorderQty || null, submittedBy
       ]
@@ -4991,11 +5047,13 @@ app.post('/api/waivers/submit', async (req, res) => {
         await connection.execute(
           `INSERT INTO waiver_material_rows
              (waiver_id, sort_order, current_part, current_part_description,
+              no_of_per, refdes,
               new_part, new_part_description, action, instructions, file_path)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             waiverId, i,
             r.currentPart || null, r.currentPartDescription || null,
+            r.noOfPer || null, r.refdes || null,
             r.newPart || null, r.newPartDescription || null,
             r.action || null, r.instructions || null, r.file || null
           ]
@@ -5005,8 +5063,8 @@ app.post('/api/waivers/submit', async (req, res) => {
 
     // 3. Insert sections
     const sections = [
-      { type: 'process', data: processData, extra: null },
-      { type: 'test', data: testData, extra: JSON.stringify({ currentPart: testData?.currentPart, toBePart: testData?.toBePart }) },
+      { type: 'process', data: processData, extra: JSON.stringify({ areas: processData?.areas, areaInstructions: processData?.areaInstructions, areaFiles: processData?.areaFiles }) },
+      { type: 'test', data: testData, extra: JSON.stringify({ rows: testData?.rows, areas: testData?.areas, areaInstructions: testData?.areaInstructions, areaFiles: testData?.areaFiles }) },
       { type: 'spec', data: specData, extra: JSON.stringify({ specImpact: specData?.specImpact }) },
       { type: 'rework', data: reworkData, extra: null },
       { type: 'label', data: labelData, extra: null },
@@ -5088,8 +5146,8 @@ app.get('/api/waiver/details/:waiverId', async (req, res) => {
       partNumber: waiver.part_number,
       revision: waiver.revision,
       description: waiver.description,
-      subcontractor: waiver.subcontractor,
-      assemblyLevel: waiver.assembly_level,
+      subcontractor: safeParse(waiver.subcontractor, waiver.subcontractor ? [waiver.subcontractor] : []),
+      assemblyLevel: safeParse(waiver.assembly_level, waiver.assembly_level ? [waiver.assembly_level] : []),
       requestor: waiver.requestor,
       startDate: waiver.start_date,
       endDate: waiver.end_date,

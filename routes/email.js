@@ -14,12 +14,11 @@ const apiUrl = process.env.API_URL || 'http://localhost:5000/api';
 const transporter = nodemailer.createTransport({
   host: 'atlmail10.amd.com',
   port: 25,
-  secure: false, // false because we are not using SSL (port 465)
-  requireTLS: true, // matches EMAIL_USE_TLS = True
+  secure: false,
+  opportunisticTLS: true,
   tls: {
-    rejectUnauthorized: false // Only disable if internal server has cert issues
+    rejectUnauthorized: false
   }
-
 });
 
 const sendCombinedDashboardEmail = async (html, attachments, recipients) => {
@@ -759,20 +758,36 @@ const { getGlobalPool } = require('../utils/database');
 const SECRET = 'amd-iqa-secret-key';
 
 router.post('/waiver/notify', async (req, res) => {
-  const { waiverId, partNumber, description, reason, submittedBy, approvers, pdfBase64 } = req.body;
+  const { waiverId, partNumber, description, revision, assemblyLevel, reason, submittedBy, approvers, pdfBase64, uploadedFilePaths } = req.body;
   if (!approvers || !approvers.length) return res.json({ success: true });
+  const path = require('path');
+  const fs = require('fs');
 
   const token = crypto.createHmac('sha256', SECRET).update(waiverId).digest('hex');
   const approvalLink = `${apiUrl}/email/waiver/approve-link?id=${waiverId}&token=${token}`;
   const cancelLink = `${apiUrl}/email/waiver/cancel-link?id=${waiverId}&token=${token}`;
 
-  const subject = `Waiver Raised – # ${waiverId}, for ${[partNumber, description].filter(Boolean).join(' ')}`;
+  const assemblyLevelText = Array.isArray(assemblyLevel) ? assemblyLevel.join(', ') : assemblyLevel || '-';
+  const subject = `Waiver Raised – # ${waiverId}`;
 
   const attachments = pdfBase64 ? [{
     filename: `${waiverId}.pdf`,
     content: Buffer.from(pdfBase64, 'base64'),
     contentType: 'application/pdf'
   }] : [];
+
+  // Attach uploaded files
+  if (Array.isArray(uploadedFilePaths)) {
+    uploadedFilePaths.forEach(filePath => {
+      if (!filePath) return;
+      const absPath = path.join(__dirname, '..', filePath.replace(/^[\/\\]+/, ''));
+      if (!fs.existsSync(absPath)) return;
+      attachments.push({
+        filename: path.basename(absPath),
+        path: absPath,
+      });
+    });
+  }
 
   try {
     await transporter.sendMail({
@@ -784,8 +799,7 @@ router.post('/waiver/notify', async (req, res) => {
           <p>Dear Approver,</p>
           <p>
             There is a waiver <strong># ${waiverId}</strong> been raised in
-            <strong>"${partNumber || '-'}"</strong> due to
-            <strong>"${reason || '-'}"</strong>.
+            ${assemblyLevelText} level ${partNumber || ''} ${description || ''} Revision ${revision || '-'} due to '${reason || '-'}'.
           </p>
           <p>Please find the waiver PDF attached to this email.</p>
           <br/>

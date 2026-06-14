@@ -297,3 +297,9 @@ modify COLUMN status ENUM('New','Approved','Closed','Rejected');
 
 ALTER TABLE waivers 
 modify COLUMN status ENUM('New','Approved','Closed','Rejected', 'Cancelled');
+
+
+11/6
+ALTER TABLE waiver_material_rows
+ADD COLUMN no_of_per VARCHAR(255) NULL AFTER current_part_description,
+ADD COLUMN refdes VARCHAR(255) NULL AFTER no_of_per;

@@ -11,15 +11,17 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 const apiUrl = process.env.API_URL || 'http://localhost:5000/api';
 
 // Nodemailer setup
-const transporter = nodemailer.createTransport({
+const createTransporter = () => nodemailer.createTransport({
   host: 'atlmail10.amd.com',
   port: 25,
   secure: false,
-  opportunisticTLS: true,
+  ignoreTLS: true,
   tls: {
     rejectUnauthorized: false
   }
 });
+
+const transporter = createTransporter();
 
 const sendCombinedDashboardEmail = async (html, attachments, recipients) => {
   await transporter.sendMail({
@@ -757,8 +759,79 @@ const crypto = require('crypto');
 const { getGlobalPool } = require('../utils/database');
 const SECRET = 'amd-iqa-secret-key';
 
+router.post('/waiver/requestor-notify', async (req, res) => {
+  const { waiverId, partNumber, description, revision, assemblyLevel, reason, submittedBy, requestors } = req.body;
+  if (!requestors || !requestors.length) return res.json({ success: true });
+
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+  const assemblyLevelText = Array.isArray(assemblyLevel) ? assemblyLevel.join(', ') : assemblyLevel || '-';
+
+  // Resolve full names to email addresses from users table
+  const { getGlobalPool } = require('../utils/database');
+  const pool = getGlobalPool();
+  const recipientEmails = [];
+  for (const name of requestors) {
+    if (!name || !name.trim()) continue;
+    // If already looks like an email, use directly
+    if (name.includes('@')) {
+      recipientEmails.push(name.trim());
+    } else {
+      const [rows] = await pool.promise().query(
+        'SELECT email FROM users WHERE full_name = ? AND status = ? LIMIT 1',
+        [name.trim(), 'active']
+      );
+      if (rows.length) recipientEmails.push(rows[0].email);
+    }
+  }
+
+  if (!recipientEmails.length) return res.json({ success: true, message: 'No valid recipient emails found' });
+
+  // Look up submittedBy email for CC
+  let ccEmail = null;
+  if (submittedBy) {
+    if (submittedBy.includes('@')) {
+      ccEmail = submittedBy;
+    } else {
+      const [ccRows] = await pool.promise().query(
+        'SELECT email FROM users WHERE full_name = ? AND status = ? LIMIT 1',
+        [submittedBy.trim(), 'active']
+      );
+      if (ccRows.length) ccEmail = ccRows[0].email;
+    }
+  }
+
+  try {
+    const mailOptions = {
+      from: `"AMD PDQD System" <noreply@amd.com>`,
+      to: recipientEmails.join(','),
+      subject: `Waiver Raised – # ${waiverId} for ${partNumber || ''} ${description || ''}`.trim(),
+      html: `
+        <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
+          <p>Dear All,</p>
+          <p>
+            There is a waiver <strong># ${waiverId}</strong> been raised in '${assemblyLevelText}' level '${partNumber || ''}' '${description || ''}' '${revision || '-'}' due to '${reason || '-'}'.
+          </p>
+          <p>
+            <a href="${frontendUrl}" style="color:#0066cc;">AMD PDQD System</a> -&gt; waiver form -&gt; all forms tab
+          </p>
+          <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
+            This is an automated notification from the AMD PDQD System. Please do not reply to this email.
+          </p>
+        </div>
+      `,
+    };
+    if (ccEmail) mailOptions.cc = ccEmail;
+
+    await createTransporter().sendMail(mailOptions);
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Requestor notification email failed:', err);
+    res.status(500).json({ error: 'Email failed' });
+  }
+});
+
 router.post('/waiver/notify', async (req, res) => {
-  const { waiverId, partNumber, description, revision, assemblyLevel, reason, submittedBy, approvers, pdfBase64, uploadedFilePaths } = req.body;
+  const { waiverId, partNumber, description, revision, assemblyLevel, reason, submittedBy, approvers, requestors, isUpdate, pdfBase64, uploadedFilePaths } = req.body;
   if (!approvers || !approvers.length) return res.json({ success: true });
   const path = require('path');
   const fs = require('fs');
@@ -768,7 +841,31 @@ router.post('/waiver/notify', async (req, res) => {
   const cancelLink = `${apiUrl}/email/waiver/cancel-link?id=${waiverId}&token=${token}`;
 
   const assemblyLevelText = Array.isArray(assemblyLevel) ? assemblyLevel.join(', ') : assemblyLevel || '-';
-  const subject = `Waiver Raised – # ${waiverId}`;
+  const subject = `Waiver ${isUpdate ? 'Updated' : 'Submitted'} – # ${waiverId} for ${partNumber || ''} ${description || ''}`.trim();
+  console.log('[waiver/notify] approvers received:', approvers, '| requestors:', requestors, '| submittedBy:', submittedBy);
+
+  // Look up emails by full_name from DB so CC gets real email addresses
+  const pool = getGlobalPool();
+  const requestorList = [...new Set(
+    (Array.isArray(requestors) ? requestors : requestors ? [requestors] : []).filter(Boolean)
+  )];
+
+  const namesToLookup = [...new Set([submittedBy, ...requestorList].filter(Boolean))];
+
+  let ccList = [];
+  if (namesToLookup.length > 0) {
+    try {
+      const placeholders = namesToLookup.map(() => '?').join(',');
+      const [userRows] = await pool.promise().query(
+        `SELECT email FROM users WHERE full_name IN (${placeholders}) AND email IS NOT NULL AND email != ''`,
+        namesToLookup
+      );
+      ccList = [...new Set(userRows.map(r => r.email).filter(Boolean))];
+      console.log('[waiver/notify] namesToLookup:', namesToLookup, '| resolved ccList:', ccList);
+    } catch (err) {
+      console.error('Failed to look up CC emails:', err);
+    }
+  }
 
   const attachments = pdfBase64 ? [{
     filename: `${waiverId}.pdf`,
@@ -790,9 +887,10 @@ router.post('/waiver/notify', async (req, res) => {
   }
 
   try {
-    await transporter.sendMail({
+    await createTransporter().sendMail({
       from: `"AMD PDQD System" <noreply@amd.com>`,
       to: approvers.join(','),
+      cc: ccList.join(','),
       subject,
       html: `
         <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
@@ -812,7 +910,7 @@ router.post('/waiver/notify', async (req, res) => {
               </td>
               <td>
                 <a href="${cancelLink}" style="display:inline-block;padding:10px 24px;background:#dc3545;color:white;text-decoration:none;border-radius:6px;font-weight:bold;">
-                  ✕ Cancel Waiver
+                  ✕ Reject Waiver
                 </a>
               </td>
             </tr>
@@ -954,43 +1052,75 @@ router.get('/waiver/approve-link', async (req, res) => {
 async function notifyRequestor(pool, waiverId, status, actionBy, cancelReason) {
   try {
     const [rows] = await pool.promise().query(
-      `SELECT w.part_number, w.submitted_by, u.email AS requestor_email
+      `SELECT w.part_number, w.description, w.revision, w.assembly_level, w.reason, w.submitted_by, w.requestor
        FROM waivers w
-       LEFT JOIN users u ON u.full_name COLLATE utf8mb4_general_ci = w.submitted_by COLLATE utf8mb4_general_ci
        WHERE w.waiver_id = ?`,
       [waiverId]
     );
     const waiver = rows[0];
-    if (!waiver || !waiver.requestor_email) return;
+    if (!waiver) return;
 
     const isApproved = status === 'Approved';
-    const actionColor = isApproved ? '#28a745' : '#dc3545';
     const actionLabel = isApproved ? 'Approved' : 'Rejected';
 
-    await transporter.sendMail({
-      from: '"AMD PDQD System" <noreply@amd.com>',
-      to: waiver.requestor_email,
-      subject: `Waiver ${actionLabel} – # ${waiverId}`,
-      html: `
+    const assemblyLevelText = (() => {
+      try { const p = JSON.parse(waiver.assembly_level); return Array.isArray(p) ? p.join(', ') : waiver.assembly_level; } catch { return waiver.assembly_level || '-'; }
+    })();
+
+    // Resolve To: submitter + requestors
+    const requestorNames = (() => {
+      try { const p = JSON.parse(waiver.requestor); return Array.isArray(p) ? p.filter(Boolean) : [waiver.requestor]; } catch { return waiver.requestor ? [waiver.requestor] : []; }
+    })();
+    const toNames = [...new Set([waiver.submitted_by, ...requestorNames].filter(Boolean))];
+
+    // Resolve CC: actionBy (approver/rejecter)
+    const allNames = [...new Set([...toNames, actionBy].filter(Boolean))];
+    let emailMap = {};
+    if (allNames.length > 0) {
+      const placeholders = allNames.map(() => '?').join(',');
+      const [userRows] = await pool.promise().query(
+        `SELECT full_name, email FROM users WHERE full_name COLLATE utf8mb4_general_ci IN (${placeholders}) AND email IS NOT NULL AND email != ''`,
+        allNames
+      );
+      userRows.forEach(r => { emailMap[r.full_name] = r.email; });
+    }
+
+    const toEmails = [...new Set(toNames.map(n => emailMap[n]).filter(Boolean))];
+    const ccEmails = [...new Set([emailMap[actionBy]].filter(Boolean))];
+    if (!toEmails.length) return;
+
+    const subject = `Waiver ${actionLabel} – # ${waiverId} for ${waiver.part_number || ''} ${waiver.description || ''}`.trim();
+
+    const html = isApproved ? `
         <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
-          <p>Dear ${waiver.submitted_by || 'Requestor'},</p>
+          <p>Dear All,</p>
           <p>
-            Your waiver <strong># ${waiverId}</strong>
-            ${waiver.part_number ? `for <strong>${waiver.part_number}</strong>` : ''}
-            has been <strong style="color:${actionColor}">${actionLabel}</strong>
-            ${actionBy ? `by <strong>${actionBy}</strong>` : ''}.
+            The waiver <strong># ${waiverId}</strong> has been <strong style="color:#28a745;">Approved</strong> in
+            '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'.
           </p>
-          ${!isApproved && cancelReason ? `
+          <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
+            This is an automated notification from the AMD PDQD System. Please do not reply to this email.
+          </p>
+        </div>` : `
+        <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
+          <p>Dear All,</p>
+          <p>
+            The waiver <strong># ${waiverId}</strong> has been <strong style="color:#dc3545;">Rejected</strong> in
+            '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'. Do edit or cancel this waiver if it is no longer valid.
+          </p>
+          ${cancelReason ? `
             <p style="background:#f8f8f8;padding:12px;border-radius:6px;font-size:14px;">
-              <strong>Reason:</strong> ${cancelReason}
+              <strong>Rejection Reason:</strong> ${cancelReason}
             </p>
           ` : ''}
           <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
             This is an automated notification from the AMD PDQD System. Please do not reply to this email.
           </p>
-        </div>
-      `,
-    });
+        </div>`;
+
+    const mailOptions = { from: '"AMD PDQD System" <noreply@amd.com>', to: toEmails.join(','), subject, html };
+    if (ccEmails.length) mailOptions.cc = ccEmails.join(',');
+    await transporter.sendMail(mailOptions);
   } catch (err) {
     console.error('Failed to notify requestor:', err);
   }
@@ -1203,40 +1333,94 @@ router.post('/waiver/status-notify', async (req, res) => {
 
   try {
     const pool = getGlobalPool();
+
+    // Fetch full waiver details
     const [rows] = await pool.promise().query(
-      `SELECT w.waiver_id, w.part_number, w.submitted_by, u.email AS requestor_email
+      `SELECT w.waiver_id, w.part_number, w.description, w.revision, w.assembly_level,
+              w.reason, w.requestor, w.submitted_by, w.approved_by
        FROM waivers w
-       LEFT JOIN users u ON u.full_name COLLATE utf8mb4_general_ci = w.submitted_by COLLATE utf8mb4_general_ci
        WHERE w.waiver_id = ?`,
       [waiverId]
     );
 
     const waiver = rows[0];
-    if (!waiver || !waiver.requestor_email) {
-      return res.json({ success: false, message: 'Requestor email not found' });
-    }
+    if (!waiver) return res.json({ success: false, message: 'Waiver not found' });
 
     const isApproved = status === 'Approved';
+
+    // Collect all names to look up emails: submitter + requestors + approver (actionBy)
+    // requestor may be stored as JSON array string or plain comma-separated string
+    let requestorNames = [];
+    if (waiver.requestor) {
+      try {
+        const parsed = JSON.parse(waiver.requestor);
+        requestorNames = Array.isArray(parsed)
+          ? parsed.map(r => r.trim()).filter(Boolean)
+          : [waiver.requestor.trim()];
+      } catch {
+        requestorNames = waiver.requestor.split(',').map(r => r.trim()).filter(Boolean);
+      }
+    }
+    console.log('[status-notify] submitted_by:', waiver.submitted_by, '| requestorNames:', requestorNames, '| actionBy:', actionBy);
+    const assemblyLevelText = (() => {
+      try {
+        const parsed = JSON.parse(waiver.assembly_level);
+        return Array.isArray(parsed) ? parsed.join(', ') : waiver.assembly_level;
+      } catch { return waiver.assembly_level || '-'; }
+    })();
+
+    const namesToLookup = [...new Set([
+      waiver.submitted_by,
+      ...requestorNames,
+      actionBy,
+    ].filter(Boolean))];
+
+    let emailMap = {};
+    if (namesToLookup.length > 0) {
+      const placeholders = namesToLookup.map(() => '?').join(',');
+      const [userRows] = await pool.promise().query(
+        `SELECT full_name, email FROM users WHERE full_name IN (${placeholders}) AND email IS NOT NULL AND email != ''`,
+        namesToLookup
+      );
+      userRows.forEach(r => { emailMap[r.full_name] = r.email; });
+    }
+
+    const submitterEmail = emailMap[waiver.submitted_by];
+    const requestorEmails = requestorNames.map(n => emailMap[n]).filter(Boolean);
+    const approverEmail = emailMap[actionBy];
+
+    const toEmails = [...new Set([submitterEmail, ...requestorEmails].filter(Boolean))];
+    const ccEmails = [...new Set([approverEmail].filter(Boolean))];
+
+    if (toEmails.length === 0) {
+      return res.json({ success: false, message: 'No recipient emails found' });
+    }
+
     const subject = isApproved
-      ? `Waiver Approved – # ${waiverId}`
-      : `Waiver Rejected – # ${waiverId}`;
+      ? `Waiver Approved – # ${waiverId} for ${waiver.part_number || ''} ${waiver.description || ''}`.trim()
+      : `Waiver Rejected – # ${waiverId} for ${waiver.part_number || ''} ${waiver.description || ''}`.trim();
 
-    const actionColor = isApproved ? '#28a745' : '#dc3545';
-    const actionIcon = isApproved ? '✓' : '✕';
-    const actionLabel = isApproved ? 'Approved' : 'Rejected';
-
-    const bodyHtml = `
+    const bodyHtml = isApproved ? `
       <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
-        <p>Dear ${waiver.submitted_by || 'Requestor'},</p>
+        <p>Dear waiver owners,</p>
         <p>
-          Your waiver <strong># ${waiverId}</strong>
-          ${waiver.part_number ? `for <strong>${waiver.part_number}</strong>` : ''}
-          has been <strong style="color:${actionColor}">${actionLabel}</strong>
-          ${actionBy ? `by <strong>${actionBy}</strong>` : ''}.
+          The waiver <strong># ${waiverId}</strong> has been <strong style="color:#28a745;">Approved</strong> in
+          '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'.
         </p>
-        ${!isApproved && cancelReason ? `
+        <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
+          This is an automated notification from the AMD PDQD System. Please do not reply to this email.
+        </p>
+      </div>
+    ` : `
+      <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
+        <p>Dear All,</p>
+        <p>
+          The waiver <strong># ${waiverId}</strong> has been <strong style="color:#dc3545;">Rejected</strong> in
+          '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'. Do edit or cancel this waiver if it is no longer valid.
+        </p>
+        ${cancelReason ? `
           <p style="background:#f8f8f8;padding:12px;border-radius:6px;font-size:14px;">
-            <strong>Reason:</strong> ${cancelReason}
+            <strong>Rejection Reason:</strong> ${cancelReason}
           </p>
         ` : ''}
         <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
@@ -1245,12 +1429,15 @@ router.post('/waiver/status-notify', async (req, res) => {
       </div>
     `;
 
-    await transporter.sendMail({
+    const mailOptions = {
       from: '"AMD PDQD System" <noreply@amd.com>',
-      to: waiver.requestor_email,
+      to: toEmails.join(','),
       subject,
       html: bodyHtml,
-    });
+    };
+    if (ccEmails.length > 0) mailOptions.cc = ccEmails.join(',');
+
+    await transporter.sendMail(mailOptions);
 
     res.json({ success: true });
   } catch (err) {
@@ -1414,7 +1601,7 @@ router.post('/build-fail-notify', async (req, res) => {
     };
     if (ccList.length) mailOptions.cc = ccList.join(',');
 
-    await transporter.sendMail(mailOptions);
+    await createTransporter().sendMail(mailOptions);
     res.json({ success: true });
   } catch (err) {
     console.error('Build fail email error:', err);

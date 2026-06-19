@@ -110,8 +110,8 @@ app.use((req, res, next) => {
   corsMiddleware(req, res, next);
 });
 
-app.use(express.json({ limit: '30mb' }));
-app.use(express.urlencoded({ extended: true, limit: '30mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Additional global CORS middleware to ensure all responses have permissive headers
 app.use((req, res, next) => {
@@ -4840,7 +4840,7 @@ app.delete("/api/waivers/:waiverId", async (req, res) => {
 app.get('/api/waivers/all', async (req, res) => {
   try {
     const [rows] = await db.promise().query(
-      `SELECT * FROM waivers ORDER BY submitted_at DESC`
+      `SELECT * FROM waivers ORDER BY updated_at DESC`
     );
     res.json(rows);
   } catch (err) {
@@ -4991,7 +4991,7 @@ app.post('/api/waivers/submit', async (req, res) => {
   const {
     waiverId, partNumber, revision, description, subcontractor,
     assemblyLevel, requestor, startDate, endDate, waiverType,
-    reason, workorder, workorderQty, submittedBy,
+    reason, workorder, workorderQty, submittedBy, status,
     materialRows, processData, testData, specData, reworkData, labelData, openSections
   } = req.body;
 
@@ -5010,7 +5010,7 @@ app.post('/api/waivers/submit', async (req, res) => {
         (waiver_id, part_number, revision, description, subcontractor,
          assembly_level, requestor, start_date, end_date, waiver_type,
          reason, workorder, workorder_qty, status, submitted_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'New', ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          part_number    = VALUES(part_number),
          revision       = VALUES(revision),
@@ -5024,8 +5024,7 @@ app.post('/api/waivers/submit', async (req, res) => {
          reason         = VALUES(reason),
          workorder      = VALUES(workorder),
          workorder_qty  = VALUES(workorder_qty),
-         submitted_by   = VALUES(submitted_by),
-         status         = 'New',
+         status         = VALUES(status),
          updated_at     = CURRENT_TIMESTAMP`,
       [
         waiverId, partNumber, revision, description,
@@ -5033,7 +5032,7 @@ app.post('/api/waivers/submit', async (req, res) => {
         Array.isArray(assemblyLevel) ? JSON.stringify(assemblyLevel) : assemblyLevel,
         requestor, startDate || null, endDate || null,
         JSON.stringify(waiverType || []),
-        reason, workorder, workorderQty || null, submittedBy
+        reason, workorder, workorderQty || null, status || 'New', submittedBy
       ]
     );
 
@@ -8516,7 +8515,8 @@ process.on('unhandledRejection', (reason, promise) => {
   process.exit(1);
 });
 
-app.use(bodyParser.json({ limit: '20mb' }));
+app.use(bodyParser.json({ limit: '50mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
 
 // Import the email router
 const emailRouter = require('./routes/email');

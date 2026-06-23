@@ -4711,11 +4711,13 @@ app.get('/api/waivers/pending', async (req, res) => {
   try {
     connection = await db.promise().getConnection();
     const [rows] = await connection.query(
-      `SELECT waiver_id, part_number, submitted_by, submitted_at, status, cancel_reason, cancelled_by, approved_by
+      `SELECT waiver_id, part_number, submitted_by, submitted_at, status, cancel_reason, cancelled_by, approved_by, parent_waiver_id
         FROM waivers
-        ORDER BY submitted_at DESC;`
+        ORDER BY updated_at DESC;`
     );
-    res.json(rows);
+    // Hide superseded versions — if a waiver is a parent of another, it has been amended
+    const parentIds = new Set(rows.map(r => r.parent_waiver_id).filter(Boolean));
+    res.json(rows.filter(r => !parentIds.has(r.waiver_id)));
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch pending waivers', message: error.message });
   } finally {
@@ -4994,7 +4996,7 @@ app.post('/api/waivers/submit', async (req, res) => {
   const {
     waiverId, partNumber, revision, description, subcontractor,
     assemblyLevel, requestor, startDate, endDate, waiverType,
-    reason, workorder, workorderQty, submittedBy, status,
+    reason, workorder, workorderQty, submittedBy, status, parentWaiverId,
     materialRows, processData, testData, specData, reworkData, labelData, openSections
   } = req.body;
 
@@ -5012,8 +5014,8 @@ app.post('/api/waivers/submit', async (req, res) => {
       `INSERT INTO waivers 
         (waiver_id, part_number, revision, description, subcontractor,
          assembly_level, requestor, start_date, end_date, waiver_type,
-         reason, workorder, workorder_qty, status, submitted_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         reason, workorder, workorder_qty, status, submitted_by, parent_waiver_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE
          part_number    = VALUES(part_number),
          revision       = VALUES(revision),
@@ -5035,7 +5037,8 @@ app.post('/api/waivers/submit', async (req, res) => {
         Array.isArray(assemblyLevel) ? JSON.stringify(assemblyLevel) : assemblyLevel,
         requestor, startDate || null, endDate || null,
         JSON.stringify(waiverType || []),
-        reason, workorder, workorderQty || null, status || 'New', submittedBy
+        reason, workorder, workorderQty || null, status || 'New', submittedBy,
+        parentWaiverId || null
       ]
     );
 
@@ -5177,6 +5180,32 @@ app.get('/api/waiver/details/:waiverId', async (req, res) => {
     res.status(500).json({ error: 'Server error' });
   } finally {
     if (connection) connection.release();
+  }
+});
+
+// GET version history chain for a waiver
+app.get('/api/waiver/history/:waiverId', async (req, res) => {
+  const { waiverId } = req.params;
+  try {
+    // Walk up to root then fetch all versions with same root
+    const [rows] = await db.promise().query(
+      `WITH RECURSIVE chain AS (
+         SELECT waiver_id, parent_waiver_id, part_number, description, revision,
+                status, submitted_by, updated_at
+         FROM waivers WHERE waiver_id = ?
+         UNION ALL
+         SELECT w.waiver_id, w.parent_waiver_id, w.part_number, w.description, w.revision,
+                w.status, w.submitted_by, w.updated_at
+         FROM waivers w
+         INNER JOIN chain c ON w.waiver_id = c.parent_waiver_id
+       )
+       SELECT * FROM chain ORDER BY updated_at ASC`,
+      [waiverId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching waiver history:', err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 

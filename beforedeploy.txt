@@ -307,3 +307,5 @@ ADD COLUMN refdes VARCHAR(255) NULL AFTER no_of_per;
 
 18/6
 ALTER TABLE waivers MODIFY COLUMN status ENUM('Draft','New','Pending Approval','Approved','Closed','Rejected','Cancelled');
+
+ALTER TABLE waivers ADD COLUMN parent_waiver_id VARCHAR(50) NULL;

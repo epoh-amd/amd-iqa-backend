@@ -10,6 +10,22 @@ process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 const apiUrl = process.env.API_URL || 'http://localhost:5000/api';
 
+// Fetch notifier emails from waiver_config table
+async function getNotifierEmails() {
+  try {
+    const { getGlobalPool } = require('../utils/database');
+    const pool = getGlobalPool();
+    const [rows] = await pool.promise().query(
+      `SELECT config_value FROM waiver_config WHERE config_key = 'notifiers' LIMIT 1`
+    );
+    if (!rows.length) return [];
+    const parsed = JSON.parse(rows[0].config_value);
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
 // Nodemailer setup
 const createTransporter = () => nodemailer.createTransport({
   host: 'atlmail10.amd.com',
@@ -800,6 +816,10 @@ router.post('/waiver/requestor-notify', async (req, res) => {
     }
   }
 
+  const notifierEmails = await getNotifierEmails();
+  const toSet = new Set(recipientEmails.map(e => e.toLowerCase()));
+  const allCcRequestor = [...new Set([...(ccEmail ? [ccEmail] : []), ...notifierEmails].filter(e => !toSet.has(e.toLowerCase())))];
+
   try {
     const mailOptions = {
       from: `"AMD PDQD System" <noreply@amd.com>`,
@@ -807,12 +827,12 @@ router.post('/waiver/requestor-notify', async (req, res) => {
       subject: `Waiver Raised – # ${waiverId} for ${partNumber || ''} ${description || ''}`.trim(),
       html: `
         <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
-          <p>Dear All,</p>
+          <p>Dear waiver owners,</p>
           <p>
             There is a waiver <strong># ${waiverId}</strong> been raised in '${assemblyLevelText}' level '${partNumber || ''}' '${description || ''}' '${revision || '-'}' due to '${reason || '-'}'.
           </p>
           <p>
-            <a href="${frontendUrl}" style="color:#0066cc;">AMD PDQD System</a> -&gt; waiver form -&gt; all forms tab
+            Please navigate to <a href="${frontendUrl}" style="color:#0066cc;">AMD PDQD System</a> -&gt; waiver form -&gt; all forms tab
           </p>
           <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
             This is an automated notification from the AMD PDQD System. Please do not reply to this email.
@@ -820,7 +840,7 @@ router.post('/waiver/requestor-notify', async (req, res) => {
         </div>
       `,
     };
-    if (ccEmail) mailOptions.cc = ccEmail;
+    if (allCcRequestor.length) mailOptions.cc = allCcRequestor.join(',');
 
     await createTransporter().sendMail(mailOptions);
     res.json({ success: true });
@@ -860,7 +880,9 @@ router.post('/waiver/notify', async (req, res) => {
         `SELECT email FROM users WHERE full_name IN (${placeholders}) AND email IS NOT NULL AND email != ''`,
         namesToLookup
       );
-      ccList = [...new Set(userRows.map(r => r.email).filter(Boolean))];
+      const notifierEmails = await getNotifierEmails();
+      const toSetNotify = new Set(approvers.map(e => e.toLowerCase()));
+      ccList = [...new Set([...userRows.map(r => r.email).filter(Boolean), ...notifierEmails].filter(e => !toSetNotify.has(e.toLowerCase())))];
       console.log('[waiver/notify] namesToLookup:', namesToLookup, '| resolved ccList:', ccList);
     } catch (err) {
       console.error('Failed to look up CC emails:', err);
@@ -1118,8 +1140,11 @@ async function notifyRequestor(pool, waiverId, status, actionBy, cancelReason) {
           </p>
         </div>`;
 
+    const notifierEmails = await getNotifierEmails();
+    const toSetNotifyRequestor = new Set(toEmails.map(e => e.toLowerCase()));
+    const allCcNotify = [...new Set([...ccEmails, ...notifierEmails].filter(e => !toSetNotifyRequestor.has(e.toLowerCase())))];
     const mailOptions = { from: '"AMD PDQD System" <noreply@amd.com>', to: toEmails.join(','), subject, html };
-    if (ccEmails.length) mailOptions.cc = ccEmails.join(',');
+    if (allCcNotify.length) mailOptions.cc = allCcNotify.join(',');
     await transporter.sendMail(mailOptions);
   } catch (err) {
     console.error('Failed to notify requestor:', err);
@@ -1300,7 +1325,7 @@ router.post('/waiver/cancel-link', cors({ origin: '*' }), async (req, res) => {
     const pool = getGlobalPool();
     await new Promise((resolve, reject) => {
       pool.query(
-        `UPDATE waivers SET status = 'Rejected', cancel_reason = ?, cancelled_by = ?, updated_at = CURRENT_TIMESTAMP WHERE waiver_id = ?`,
+        `UPDATE waivers SET status = 'New', cancel_reason = ?, cancelled_by = ?, updated_at = CURRENT_TIMESTAMP WHERE waiver_id = ?`,
         [cancelReason.trim(), cancelledBy.trim(), id],
         (err) => err ? reject(err) : resolve()
       );
@@ -1347,6 +1372,7 @@ router.post('/waiver/status-notify', async (req, res) => {
     if (!waiver) return res.json({ success: false, message: 'Waiver not found' });
 
     const isApproved = status === 'Approved';
+    const isCancelled = status === 'Cancelled';
 
     // Collect all names to look up emails: submitter + requestors + approver (actionBy)
     // requestor may be stored as JSON array string or plain comma-separated string
@@ -1398,15 +1424,33 @@ router.post('/waiver/status-notify', async (req, res) => {
 
     const subject = isApproved
       ? `Waiver Approved – # ${waiverId} for ${waiver.part_number || ''} ${waiver.description || ''}`.trim()
+      : isCancelled
+      ? `Waiver Cancelled – # ${waiverId} for ${waiver.part_number || ''} ${waiver.description || ''}`.trim()
       : `Waiver Rejected – # ${waiverId} for ${waiver.part_number || ''} ${waiver.description || ''}`.trim();
 
     const bodyHtml = isApproved ? `
       <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
-        <p>Dear waiver owners,</p>
+        <p>Dear All,</p>
         <p>
           The waiver <strong># ${waiverId}</strong> has been <strong style="color:#28a745;">Approved</strong> in
           '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'.
         </p>
+        <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
+          This is an automated notification from the AMD PDQD System. Please do not reply to this email.
+        </p>
+      </div>
+    ` : isCancelled ? `
+      <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
+        <p>Dear All,</p>
+        <p>
+          The waiver <strong># ${waiverId}</strong> has been <strong style="color:#e65100;">Cancelled</strong> in
+          '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'.
+        </p>
+        ${cancelReason ? `
+          <p style="background:#f8f8f8;padding:12px;border-radius:6px;font-size:14px;">
+            <strong>Cancellation Reason:</strong> ${cancelReason}
+          </p>
+        ` : ''}
         <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
           This is an automated notification from the AMD PDQD System. Please do not reply to this email.
         </p>
@@ -1429,13 +1473,17 @@ router.post('/waiver/status-notify', async (req, res) => {
       </div>
     `;
 
+    const notifierEmails = await getNotifierEmails();
+    const toSetStatus = new Set(toEmails.map(e => e.toLowerCase()));
+    const allCcStatus = [...new Set([...ccEmails, ...notifierEmails].filter(e => !toSetStatus.has(e.toLowerCase())))];
+
     const mailOptions = {
       from: '"AMD PDQD System" <noreply@amd.com>',
       to: toEmails.join(','),
       subject,
       html: bodyHtml,
     };
-    if (ccEmails.length > 0) mailOptions.cc = ccEmails.join(',');
+    if (allCcStatus.length > 0) mailOptions.cc = allCcStatus.join(',');
 
     await transporter.sendMail(mailOptions);
 

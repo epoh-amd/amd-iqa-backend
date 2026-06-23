@@ -4734,15 +4734,18 @@ app.patch('/api/waivers/:waiverId/status', async (req, res) => {
     return res.status(400).json({ error: `Invalid status: ${status}` });
   }
 
+  // Rejected reverts to New so requestor can re-edit; rejection info kept in cancelled_by/cancel_reason
+  const dbStatus = status === 'Rejected' ? 'New' : status;
+
   let connection;
   try {
     connection = await db.promise().getConnection();
     await connection.execute(
       `UPDATE waivers SET status = ?, cancel_reason = ?, cancelled_by = ?, approved_by = ?, updated_at = CURRENT_TIMESTAMP
        WHERE waiver_id = ?`,
-      [status, reason || null, cancelledBy || null, approvedBy || null, waiverId]
+      [dbStatus, reason || null, cancelledBy || null, approvedBy || null, waiverId]
     );
-    res.json({ success: true, waiverId, status });
+    res.json({ success: true, waiverId, status: dbStatus });
   } catch (error) {
     res.status(500).json({ error: 'Failed to update waiver status', message: error.message });
   } finally {

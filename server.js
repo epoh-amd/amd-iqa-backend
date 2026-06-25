@@ -2145,7 +2145,7 @@ WHERE b.project_name = ?
       );
     `;
 
-    db.query(query, [projectId, projectId], (err, results) => {
+    db.query(query, [projectId], (err, results) => {
 
       if (err) {
         console.error('Error fetching quality data:', err);
@@ -2232,7 +2232,7 @@ WHERE b.project_name = ?
           {
             name: 'Good',
             value: totalBuilds > 0
-              ? Number(((goodBuilds / totalBuilds) * 100).toFixed(1))
+              ? Math.round((goodBuilds / totalBuilds) * 100)
               : 0,
             count: goodBuilds,
             color: '#10b981'
@@ -2240,38 +2240,32 @@ WHERE b.project_name = ?
         ];
 
         Object.entries(failureCategories).forEach(([category, buildSet]) => {
-
           const percentage = totalBuilds > 0
             ? Math.max(1, Math.round((buildSet.size / totalBuilds) * 100))
             : 0;
 
           if (percentage > 0) {
-
             pieData.push({
               name: category,
               value: percentage,
               count: buildSet.size,
               color: categoryColorMap[category]
             });
-
-            // ✅ Fix total to 100%
-            let totalPercent = pieData.reduce((sum, item) => sum + item.value, 0);
-            let diff = 100 - totalPercent;
-
-            if (diff !== 0 && pieData.length > 0) {
-              // Adjust the largest slice (usually "Good")
-              const maxIndex = pieData.reduce(
-                (maxIdx, item, i, arr) =>
-                  item.value > arr[maxIdx].value ? i : maxIdx,
-                0
-              );
-
-              pieData[maxIndex].value += diff;
-            }
-
           }
-
         });
+
+        // Fix total to exactly 100% by adjusting the largest slice
+        if (pieData.length > 0) {
+          const totalPercent = pieData.reduce((sum, item) => sum + item.value, 0);
+          const diff = 100 - totalPercent;
+          if (diff !== 0) {
+            const maxIndex = pieData.reduce(
+              (maxIdx, item, i, arr) => item.value > arr[maxIdx].value ? i : maxIdx,
+              0
+            );
+            pieData[maxIndex].value += diff;
+          }
+        }
 
         const barData = Object.entries(breakdownData[platformType]).map(([failureMode, data]) => ({
           issue: failureMode,

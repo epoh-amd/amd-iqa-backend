@@ -54,7 +54,14 @@ const sendCombinedDashboardEmail = async (html, attachments, recipients) => {
 
 
 
+let dashboardCronRunning = false;
+
 cron.schedule('30 8 * * 1', async () => {
+  if (dashboardCronRunning) {
+    console.log('Dashboard cron already running, skipping duplicate trigger.');
+    return;
+  }
+  dashboardCronRunning = true;
   console.log('Running combined dashboard cron...');
   try {
     const recipients = process.env.EMAIL_RECIPIENTS
@@ -393,6 +400,8 @@ cron.schedule('30 8 * * 1', async () => {
 
   } catch (err) {
     console.error('Combined dashboard cron failed:', err);
+  } finally {
+    dashboardCronRunning = false;
   }
 }, {
   timezone: 'Asia/Kuala_Lumpur'

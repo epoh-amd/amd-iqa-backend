@@ -841,7 +841,7 @@ router.post('/waiver/requestor-notify', async (req, res) => {
             There is a waiver <strong># ${waiverId}</strong> been raised in '${assemblyLevelText}' level '${partNumber || ''}' '${description || ''}' '${revision || '-'}' due to '${reason || '-'}'.
           </p>
           <p>
-            Please navigate to <a href="${frontendUrl}" style="color:#0066cc;">AMD PDQD System</a> -&gt; waiver form -&gt; all forms tab
+            Please navigate to <a href="${frontendUrl}" style="color:#0066cc;">AMD PDQD System</a> -&gt; waiver form -&gt; all forms tab -&gt; # ${waiverId}
           </p>
           <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
             This is an automated notification from the AMD PDQD System. Please do not reply to this email.

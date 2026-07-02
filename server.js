@@ -8303,6 +8303,17 @@ app.get('/api/changegear/template/download', (req, res) => {
 });
 
 
+// Material Waiver template download — serves static file from templates folder
+app.get('/api/waiver/material-template', (req, res) => {
+  const filePath = path.resolve(__dirname, 'templates', 'material_waiver_template.xlsx');
+  res.download(filePath, 'material_waiver_template.xlsx', (err) => {
+    if (err) {
+      console.error('Material waiver template download error:', err);
+      res.status(500).send('Error downloading template');
+    }
+  });
+});
+
 // Debug endpoint to list all photos for a build
 app.get('/api/debug/photos/:chassisSN', (req, res) => {
   const { chassisSN } = req.params;

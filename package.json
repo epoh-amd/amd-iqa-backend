@@ -35,7 +35,8 @@
     "read": "^4.1.0",
     "sharp": "^0.33.5",
     "ssh2-sftp-client": "^12.1.1",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "xlsx-js-style": "^1.2.0"
   },
   "devDependencies": {
     "nodemon": "^2.0.22"

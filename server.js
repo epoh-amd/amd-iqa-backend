@@ -883,7 +883,7 @@ app.put('/api/builds/bulk-update', async (req, res) => {
       if (fields.length > 0) {
         values.push(chassis_sn);
         await conn.execute(
-          `UPDATE builds SET ${fields.join(', ')}, updated_at = NOW() WHERE chassis_sn = ?`,
+          `UPDATE builds SET ${fields.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE chassis_sn = ?`,
           values
         );
       }

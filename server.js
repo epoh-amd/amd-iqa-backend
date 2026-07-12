@@ -5911,7 +5911,7 @@ app.patch('/api/builds/:chassisSN/quality', async (req, res) => {
  */
 app.patch('/api/builds/:chassisSN/rework', async (req, res) => {
   const { chassisSN } = req.params;
-  const { systemInfo } = req.body;
+  const { systemInfo, qualityDetails } = req.body;
 
   // Calculate FPY status at the beginning so it's available throughout
   const fpyStatus = (
@@ -6078,8 +6078,9 @@ app.patch('/api/builds/:chassisSN/rework', async (req, res) => {
         lom_working_notes = ?,
         fpy_status = ?,
         problem_description = ?,
-        status = CASE 
+        status = CASE
           WHEN ? = 'Pass' THEN 'Complete'
+          WHEN ? = 'Fail' THEN 'Fail'
           ELSE status
         END,
         updated_at = CURRENT_TIMESTAMP
@@ -6106,8 +6107,9 @@ app.patch('/api/builds/:chassisSN/rework', async (req, res) => {
       toDbValue(systemInfo.lomWorkingStatus),
       toDbValue(systemInfo.lomWorkingNotes),
       toDbValue(fpyStatus),
-      toDbValue(systemInfo.problemDescription), // Set problem description from rework
-      toDbValue(fpyStatus), // For the CASE statement
+      toDbValue(systemInfo.problemDescription),
+      toDbValue(fpyStatus), // For the CASE WHEN Pass
+      toDbValue(fpyStatus), // For the CASE WHEN Fail
       chassisSN
     ];
 
@@ -6127,6 +6129,20 @@ app.patch('/api/builds/:chassisSN/rework', async (req, res) => {
           'INSERT INTO dimm_serial_numbers (chassis_sn, dimm_sn) VALUES (?, ?)',
           [chassisSN, dimmSN]
         );
+      }
+    }
+
+    // Insert new build failures from rework
+    if (qualityDetails && qualityDetails.failureModes && qualityDetails.failureModes.length > 0) {
+      for (let i = 0; i < qualityDetails.failureModes.length; i++) {
+        const mode = qualityDetails.failureModes[i];
+        const category = qualityDetails.failureCategories?.[i] || '';
+        if (mode) {
+          await connection.execute(
+            'INSERT INTO build_failures (chassis_sn, failure_mode, failure_category) VALUES (?, ?, ?)',
+            [chassisSN, mode, category]
+          );
+        }
       }
     }
 
@@ -6776,6 +6792,14 @@ app.post('/api/search-builds', (req, res) => {
       mb.capitalization,
       mb.delivery_date,
       mb.master_status,
+      -- Get problem_description from latest rework_history entry
+      (
+        SELECT rh_latest.problem_description
+        FROM rework_history rh_latest
+        WHERE rh_latest.chassis_sn = b.chassis_sn
+        ORDER BY rh_latest.rework_date DESC
+        LIMIT 1
+      ) as problem_description,
       -- FIXED: Add rework information
       CASE
         WHEN COUNT(DISTINCT rh.id) > 0 THEN 'Yes'
@@ -6786,7 +6810,7 @@ app.post('/api/search-builds', (req, res) => {
     LEFT JOIN dimm_serial_numbers d ON b.chassis_sn = d.chassis_sn
     LEFT JOIN master_builds mb ON b.chassis_sn = mb.chassis_sn
     LEFT JOIN rework_history rh ON b.chassis_sn = rh.chassis_sn
-    LEFT JOIN project_name pn ON b.project_name = pn.id 
+    LEFT JOIN project_name pn ON b.project_name = pn.id
     WHERE 1=1
   `;
 
@@ -7106,22 +7130,53 @@ app.post('/api/search-builds', (req, res) => {
 
     console.log(`Search returned ${results.length} results`);
 
-    // Process results to parse DIMM SNs and format data
-    results.forEach(row => {
-      // Parse DIMM SNs into array
-      if (row.dimm_sns) {
-        row.dimmSNs = row.dimm_sns.split(',').filter(sn => sn && sn.trim());
-      } else {
-        row.dimmSNs = [];
+    if (results.length === 0) return res.json(results);
+
+    // Fetch latest failure mode/category for each chassis separately (same as export)
+    const chassisList = results.map(r => r.chassis_sn);
+    const placeholders = chassisList.map(() => '?').join(',');
+    const failureQuery = `
+      SELECT chassis_sn, failure_mode, failure_category
+      FROM (
+        SELECT chassis_sn, failure_mode, failure_category,
+               ROW_NUMBER() OVER (PARTITION BY chassis_sn ORDER BY sort_id DESC) AS rn
+        FROM (
+          SELECT bf.chassis_sn, bf.failure_mode, bf.failure_category, bf.id AS sort_id
+          FROM build_failures bf WHERE bf.chassis_sn IN (${placeholders})
+          UNION ALL
+          SELECT rh.chassis_sn, rf.failure_mode, rf.failure_category, rf.id AS sort_id
+          FROM rework_history rh
+          JOIN rework_failures rf ON rh.id = rf.rework_id
+          WHERE rh.chassis_sn IN (${placeholders})
+        ) combined
+      ) ranked WHERE rn = 1
+    `;
+
+    db.query(failureQuery, [...chassisList, ...chassisList], (ferr, failureResults) => {
+      const failureMap = {};
+      if (!ferr && failureResults) {
+        failureResults.forEach(f => {
+          failureMap[f.chassis_sn] = { failure_mode: f.failure_mode, failure_category: f.failure_category };
+        });
       }
-      delete row.dimm_sns;
 
-      // Ensure rework data is properly formatted
-      row.has_rework = row.has_rework || 'No';
-      row.rework_count = row.rework_count || 0;
+      // Process results
+      results.forEach(row => {
+        if (row.dimm_sns) {
+          row.dimmSNs = row.dimm_sns.split(',').filter(sn => sn && sn.trim());
+        } else {
+          row.dimmSNs = [];
+        }
+        delete row.dimm_sns;
+        row.has_rework = row.has_rework || 'No';
+        row.rework_count = row.rework_count || 0;
+        const f = failureMap[row.chassis_sn];
+        row.failure_modes_combined = f ? f.failure_mode : null;
+        row.failure_categories_combined = f ? f.failure_category : null;
+      });
+
+      res.json(results);
     });
-
-    res.json(results);
   });
 });
 

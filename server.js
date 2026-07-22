@@ -205,7 +205,7 @@ app.get('/api/waivers/approve-link', async (req, res) => {
 
     try {
         await db.query(
-            `UPDATE waivers SET status = 'Approved', updated_at = CURRENT_TIMESTAMP WHERE waiver_id = ?`,
+            `UPDATE waivers SET status = 'Approved', approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE waiver_id = ?`,
             [id]
         );
         res.send(`
@@ -4705,7 +4705,7 @@ app.get('/api/waivers/pending', async (req, res) => {
   try {
     connection = await db.promise().getConnection();
     const [rows] = await connection.query(
-      `SELECT waiver_id, part_number, submitted_by, submitted_at, status, cancel_reason, cancelled_by, approved_by, parent_waiver_id
+      `SELECT waiver_id, part_number, submitted_by, submitted_at, status, cancel_reason, cancelled_by, approved_by, approved_at, closed_at, parent_waiver_id
         FROM waivers
         ORDER BY updated_at DESC;`
     );
@@ -4737,9 +4737,12 @@ app.patch('/api/waivers/:waiverId/status', async (req, res) => {
   try {
     connection = await db.promise().getConnection();
     await connection.execute(
-      `UPDATE waivers SET status = ?, cancel_reason = ?, cancelled_by = ?, approved_by = ?, updated_at = CURRENT_TIMESTAMP
+      `UPDATE waivers SET status = ?, cancel_reason = ?, cancelled_by = ?, approved_by = ?,
+       approved_at = CASE WHEN ? = 'Approved' THEN CURRENT_TIMESTAMP ELSE approved_at END,
+       closed_at   = CASE WHEN ? = 'Closed'   THEN CURRENT_TIMESTAMP ELSE closed_at   END,
+       updated_at = CURRENT_TIMESTAMP
        WHERE waiver_id = ?`,
-      [dbStatus, reason || null, cancelledBy || null, approvedBy || null, waiverId]
+      [dbStatus, reason || null, cancelledBy || null, approvedBy || null, dbStatus, dbStatus, waiverId]
     );
     res.json({ success: true, waiverId, status: dbStatus });
   } catch (error) {

@@ -785,7 +785,7 @@ const { getGlobalPool } = require('../utils/database');
 const SECRET = 'amd-iqa-secret-key';
 
 router.post('/waiver/requestor-notify', async (req, res) => {
-  const { waiverId, partNumber, description, revision, assemblyLevel, reason, submittedBy, requestors } = req.body;
+  const { waiverId, partNumber, description, revision, assemblyLevel, reason, submittedBy, requestors, subcontractor } = req.body;
   if (!requestors || !requestors.length) return res.json({ success: true });
 
   const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -833,13 +833,19 @@ router.post('/waiver/requestor-notify', async (req, res) => {
     const mailOptions = {
       from: `"AMD PDQD System" <noreply@amd.com>`,
       to: recipientEmails.join(','),
-      subject: `Waiver Raised – # ${waiverId} for ${partNumber || ''} ${description || ''}`.trim(),
+      subject: `${waiverId}: Waiver Raised for ${description || ''} (${partNumber || ''}) - Rev ${revision || '-'}`,
       html: `
         <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
           <p>Dear waiver owners,</p>
           <p>
-            There is a waiver <strong># ${waiverId}</strong> been raised in '${assemblyLevelText}' level '${partNumber || ''}' '${description || ''}' '${revision || '-'}' due to '${reason || '-'}'.
+            A waiver <strong>${waiverId}</strong> has been raised for the following <strong>${assemblyLevelText}</strong> level assembly:
           </p>
+          <table style="border-collapse: collapse; margin: 8px 0 16px 0;">
+            <tr><td style="padding: 4px 16px 4px 0; font-weight: 600;">Part Number</td><td style="padding: 4px 0;">${partNumber || '-'}</td></tr>
+            <tr><td style="padding: 4px 16px 4px 0; font-weight: 600;">Description</td><td style="padding: 4px 0;">${description || '-'}</td></tr>
+            <tr><td style="padding: 4px 16px 4px 0; font-weight: 600;">Subcontractor</td><td style="padding: 4px 0;">${Array.isArray(subcontractor) ? subcontractor.join(', ') : subcontractor || '-'}</td></tr>
+            <tr><td style="padding: 4px 16px 4px 0; font-weight: 600; vertical-align: top;">Reason for Waiver Request</td><td style="padding: 4px 0;">${reason || '-'}</td></tr>
+          </table>
           <p>
             Please navigate to <a href="${frontendUrl}" style="color:#0066cc;">AMD PDQD System</a> -&gt; waiver form -&gt; all forms tab -&gt; # ${waiverId}
           </p>
@@ -860,7 +866,7 @@ router.post('/waiver/requestor-notify', async (req, res) => {
 });
 
 router.post('/waiver/notify', async (req, res) => {
-  const { waiverId, partNumber, description, revision, assemblyLevel, reason, submittedBy, approvers, requestors, isUpdate, pdfBase64, uploadedFilePaths } = req.body;
+  const { waiverId, partNumber, description, revision, assemblyLevel, subcontractor, reason, submittedBy, approvers, requestors, isUpdate, pdfBase64, uploadedFilePaths } = req.body;
   if (!approvers || !approvers.length) return res.json({ success: true });
   const path = require('path');
   const fs = require('fs');
@@ -927,9 +933,14 @@ router.post('/waiver/notify', async (req, res) => {
         <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
           <p>Dear Approver,</p>
           <p>
-            There is a waiver <strong># ${waiverId}</strong> been raised in
-            ${assemblyLevelText} level ${partNumber || ''} ${description || ''} Revision ${revision || '-'} due to '${reason || '-'}'.
+            A waiver <strong>${waiverId}</strong> has been raised for the following <strong>${assemblyLevelText}</strong> level assembly:
           </p>
+          <table style="border-collapse: collapse; margin: 8px 0 16px 0;">
+            <tr><td style="padding: 4px 16px 4px 0; font-weight: 600;">Part Number</td><td style="padding: 4px 0;">${partNumber || '-'}</td></tr>
+            <tr><td style="padding: 4px 16px 4px 0; font-weight: 600;">Description</td><td style="padding: 4px 0;">${description || '-'}</td></tr>
+            <tr><td style="padding: 4px 16px 4px 0; font-weight: 600;">Subcontractor</td><td style="padding: 4px 0;">${Array.isArray(subcontractor) ? subcontractor.join(', ') : subcontractor || '-'}</td></tr>
+            <tr><td style="padding: 4px 16px 4px 0; font-weight: 600; vertical-align: top;">Reason for Waiver Request</td><td style="padding: 4px 0;">${reason || '-'}</td></tr>
+          </table>
           <p>Please find the waiver PDF attached to this email.</p>
           <br/>
           <table cellpadding="0" cellspacing="0" style="border-collapse:separate;border-spacing:12px 0;">
@@ -1382,6 +1393,7 @@ router.post('/waiver/status-notify', async (req, res) => {
 
     const isApproved = status === 'Approved';
     const isCancelled = status === 'Cancelled';
+    const isClosed = status === 'Closed';
 
     // Collect all names to look up emails: submitter + requestors + approver (actionBy)
     // requestor may be stored as JSON array string or plain comma-separated string
@@ -1435,6 +1447,8 @@ router.post('/waiver/status-notify', async (req, res) => {
       ? `Waiver Approved – # ${waiverId} for ${waiver.part_number || ''} ${waiver.description || ''}`.trim()
       : isCancelled
       ? `Waiver Cancelled – # ${waiverId} for ${waiver.part_number || ''} ${waiver.description || ''}`.trim()
+      : isClosed
+      ? `Waiver Closed – # ${waiverId} for ${waiver.part_number || ''} ${waiver.description || ''}`.trim()
       : `Waiver Rejected – # ${waiverId} for ${waiver.part_number || ''} ${waiver.description || ''}`.trim();
 
     const bodyHtml = isApproved ? `
@@ -1460,6 +1474,17 @@ router.post('/waiver/status-notify', async (req, res) => {
             <strong>Cancellation Reason:</strong> ${cancelReason}
           </p>
         ` : ''}
+        <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
+          This is an automated notification from the AMD PDQD System. Please do not reply to this email.
+        </p>
+      </div>
+    ` : isClosed ? `
+      <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
+        <p>Dear All,</p>
+        <p>
+          The waiver <strong># ${waiverId}</strong> has been <strong style="color:#555;">Closed</strong> in
+          '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' '${waiver.revision || '-'}'.
+        </p>
         <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
           This is an automated notification from the AMD PDQD System. Please do not reply to this email.
         </p>

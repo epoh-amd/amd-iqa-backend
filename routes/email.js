@@ -1196,7 +1196,7 @@ router.post('/waiver/approve-link', cors({ origin: '*' }), async (req, res) => {
     const pool = getGlobalPool();
     await new Promise((resolve, reject) => {
       pool.query(
-        `UPDATE waivers SET status = 'Approved', approved_by = ?, updated_at = CURRENT_TIMESTAMP WHERE waiver_id = ?`,
+        `UPDATE waivers SET status = 'Approved', approved_by = ?, approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE waiver_id = ?`,
         [approvedBy.trim(), id],
         (err) => err ? reject(err) : resolve()
       );

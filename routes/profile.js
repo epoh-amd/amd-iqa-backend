@@ -435,7 +435,7 @@ const getCategoryPermissions = (category) => {
     case 'cat2':
       return ['search', 'clf', 'start_build', 'continue_build'];
     case 'cat3':
-      return ['dashboard', 'search', 'clf', 'start_build', 'continue_build', 'allocation'];
+      return ['dashboard', 'search', 'clf', 'start_build', 'continue_build', 'allocation', 'waiver_form'];
     case 'cat4':
       return ['dashboard', 'search', 'clf', 'start_build', 'continue_build', 'allocation', 'user_management'];
     case 'customer':
@@ -629,7 +629,7 @@ router.get('/debug/test-profile-data', (req, res) => {
  */
 //original okta flow uncomment this in production
 
-
+/*
 router.get('/auth/okta', (req, res, next) => {
   console.log('=== Okta Auth Initiation ===');
   console.log('OKTA_ISSUER:', process.env.OKTA_ISSUER);
@@ -652,10 +652,11 @@ router.get('/auth/okta', (req, res, next) => {
     next();
   })(req, res, next);
 }, passport.authenticate('okta'));
+*/
 
 
 
-/*
+
 router.get('/auth/okta', async (req, res, next) => {
   // Development bypass: skip Okta entirely and simulate a successful login
   if (process.env.NODE_ENV === 'development') {
@@ -725,7 +726,7 @@ router.get('/auth/okta', async (req, res, next) => {
     next();
   })(req, res, next);
 }, passport.authenticate('okta'));
-*/
+
 
 /**
  * GET /auth/okta/callback
@@ -1110,6 +1111,29 @@ router.get('/users', apiAuth, requireRole(['cat4']), async (req, res) => {
 });
 
 /**
+ * GET /users/search-email?q=...
+ * Search users by email or name for autocomplete
+ */
+router.get('/users/search-email', async (req, res) => {
+  const { q } = req.query;
+  if (!q || q.trim().length < 1) return res.json([]);
+  try {
+    const rows = await executeQuery(
+      `SELECT email, full_name FROM users
+       WHERE status = 'active'
+         AND (email LIKE ? OR full_name LIKE ?)
+       ORDER BY full_name ASC
+       LIMIT 10`,
+      [`%${q}%`, `%${q}%`]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error searching user emails:', err);
+    res.status(500).json({ error: 'Search failed' });
+  }
+});
+
+/**
  * GET /api/profile/users/:userId
  * Get specific user details (admin only)
  */
@@ -1183,8 +1207,8 @@ router.get('/admin/roles', apiAuth, requireRole(['cat4']), async (req, res) => {
       {
         id: 'cat3',
         name: 'Category 3',
-        description: 'Dashboard, Search, CLF, Start Build, Continue Build, Allocation access',
-        permissions: ['dashboard', 'search', 'clf', 'start_build', 'continue_build', 'allocation']
+        description: 'Dashboard, Search, CLF, Start Build, Continue Build, Allocation, Waiver Management access',
+        permissions: ['dashboard', 'search', 'clf', 'start_build', 'continue_build', 'allocation', 'waiver_form']
       },
       {
         id: 'cat4',
@@ -1764,6 +1788,27 @@ router.get('/permissions/list', async (req, res) => {
 // TEST ENDPOINTS (NO AUTH) - FOR DEBUGGING
 // ============================================================================
 
-
+/**
+ * GET /users/search-email?q=...
+ * Search users by email or name for autocomplete (no auth required so modal can use it)
+ */
+router.get('/users/search-email', async (req, res) => {
+  const { q } = req.query;
+  if (!q || q.trim().length < 1) return res.json([]);
+  try {
+    const rows = await executeQuery(
+      `SELECT email, full_name FROM users
+       WHERE status = 'active'
+         AND (email LIKE ? OR full_name LIKE ?)
+       ORDER BY full_name ASC
+       LIMIT 10`,
+      [`%${q}%`, `%${q}%`]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Error searching user emails:', err);
+    res.status(500).json({ error: 'Search failed' });
+  }
+});
 
 module.exports = router;

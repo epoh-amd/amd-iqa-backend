@@ -55,7 +55,7 @@ async function initializePermissions(db) {
         // Cat2 (user) - Search, CLF, Start Build, Continue
         { role: 'user', permissions: ['search', 'clf', 'start_build', 'continue_build'] },
         // Cat3 (manager) - Dashboard, Search, CLF, Start Build, Continue, Allocation
-        { role: 'manager', permissions: ['dashboard', 'search', 'clf', 'start_build', 'continue_build', 'allocation'] },
+        { role: 'manager', permissions: ['dashboard', 'search', 'clf', 'start_build', 'continue_build', 'allocation', 'waiver_form'] },
         // Cat4 (admin) - Everything including User Management
         { role: 'admin', permissions: ['dashboard', 'search', 'clf', 'start_build', 'continue_build', 'allocation', 'user_management'] },
         // Customer - Only Customer Portal

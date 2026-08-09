@@ -4825,11 +4825,8 @@ app.delete("/api/waivers/:waiverId", async (req, res) => {
       [waiverId]
     );
 
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ error: `Waiver ${waiverId} not found` });
-    }
-
-    res.json({ success: true, message: `Waiver ${waiverId} deleted` });
+    // No draft found is not an error — it may not have been auto-saved yet
+    res.json({ success: true, message: `Waiver ${waiverId} deleted`, deleted: result.affectedRows > 0 });
 
   } catch (error) {
     console.error("Error deleting waiver:", error);
@@ -4839,10 +4836,52 @@ app.delete("/api/waivers/:waiverId", async (req, res) => {
   }
 });
 
+// PATCH workorder fields only — no status change, no notifications
+app.patch('/api/waivers/:waiverId/workorder', async (req, res) => {
+  const { waiverId } = req.params;
+  const { workorder, workorderQty } = req.body;
+  try {
+    await db.promise().query(
+      `UPDATE waivers SET workorder = ?, workorder_qty = ?, updated_at = CURRENT_TIMESTAMP WHERE waiver_id = ?`,
+      [workorder || null, workorderQty || null, waiverId]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET next waiver ID — sequential, format WV26047-A
+app.get('/api/waivers/next-id', async (req, res) => {
+  try {
+    const year = new Date().getFullYear().toString().slice(-2);
+    const prefix = `WV${year}`;
+    // Fetch all -A waivers from both waivers and waiver_drafts tables
+    const [rows] = await db.promise().query(
+      `SELECT waiver_id FROM waivers WHERE waiver_id LIKE ?
+       UNION
+       SELECT waiver_id FROM waiver_drafts WHERE waiver_id LIKE ?`,
+      [`${prefix}%-A`, `${prefix}%-A`]
+    );
+    let maxNum = 46; // next will be 47 as default start
+    rows.forEach(r => {
+      const match = r.waiver_id.match(/^WV\d{2}(\d+)-A$/);
+      if (match) {
+        const n = parseInt(match[1]);
+        if (n > maxNum) maxNum = n;
+      }
+    });
+    const nextId = `${prefix}${String(maxNum + 1).padStart(3, '0')}-A`;
+    res.json({ nextId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/waivers/all', async (req, res) => {
   try {
     const [rows] = await db.promise().query(
-      `SELECT * FROM waivers ORDER BY updated_at DESC`
+      `SELECT * FROM waivers ORDER BY waiver_id DESC`
     );
     res.json(rows);
   } catch (err) {
@@ -4873,7 +4912,7 @@ app.put('/api/waivers/:waiverId/edit', async (req, res) => {
     assemblyLevel, requestor, startDate, endDate, waiverType,
     reason, workorder, workorderQty,
     materialRows, processData, testData, specData, reworkData, labelData,
-    modifiedBy
+    openSections, modifiedBy
   } = req.body;
 
   // helper at the top of the route (or inline)
@@ -4945,16 +4984,15 @@ const toDateOnly = (val) => val ? val.toString().slice(0, 10) : null;
     }
 
     // 3. Update sections
+    const activeApproverSections = Array.isArray(openSections) ? openSections : [];
     const sections = [
-      { type: 'process', data: processData, extra: JSON.stringify({ areas: processData?.areas, areaInstructions: processData?.areaInstructions, areaFiles: processData?.areaFiles }) },
-      { type: 'test',    data: testData,    extra: JSON.stringify({ rows: testData?.rows, areas: testData?.areas, areaInstructions: testData?.areaInstructions, areaFiles: testData?.areaFiles }) },
-      { type: 'spec',    data: specData,    extra: JSON.stringify({ specImpact: specData?.specImpact }) },
-      { type: 'rework',  data: reworkData,  extra: null },
-      { type: 'label',   data: labelData,   extra: null },
+      { type: 'process', key: 'process', data: processData, extra: JSON.stringify({ areas: processData?.areas, areaInstructions: processData?.areaInstructions, areaFiles: processData?.areaFiles }) },
+      { type: 'test',    key: 'test',    data: testData,    extra: JSON.stringify({ rows: testData?.rows, areas: testData?.areas, areaInstructions: testData?.areaInstructions, areaFiles: testData?.areaFiles }) },
     ];
 
     for (const section of sections) {
       if (!section.data) continue;
+      if (activeApproverSections.length > 0 && !activeApproverSections.includes(section.key)) continue;
       await connection.execute(
         `INSERT INTO waiver_sections
            (waiver_id, section_type, instructions, extra_data, file_path_1, file_path_2)
@@ -5063,17 +5101,17 @@ app.post('/api/waivers/submit', async (req, res) => {
       }
     }
 
-    // 3. Insert sections
+    // 3. Insert sections — only for selected waiver types
+    const activeSections = Array.isArray(openSections) ? openSections : [];
     const sections = [
-      { type: 'process', data: processData, extra: JSON.stringify({ areas: processData?.areas, areaInstructions: processData?.areaInstructions, areaFiles: processData?.areaFiles }) },
-      { type: 'test', data: testData, extra: JSON.stringify({ rows: testData?.rows, areas: testData?.areas, areaInstructions: testData?.areaInstructions, areaFiles: testData?.areaFiles }) },
-      { type: 'spec', data: specData, extra: JSON.stringify({ specImpact: specData?.specImpact }) },
-      { type: 'rework', data: reworkData, extra: null },
-      { type: 'label', data: labelData, extra: null },
+      { type: 'process', key: 'process', data: processData, extra: JSON.stringify({ areas: processData?.areas, areaInstructions: processData?.areaInstructions, areaFiles: processData?.areaFiles }) },
+      { type: 'test',    key: 'test',    data: testData,    extra: JSON.stringify({ rows: testData?.rows, areas: testData?.areas, areaInstructions: testData?.areaInstructions, areaFiles: testData?.areaFiles }) },
     ];
 
     for (const section of sections) {
       if (!section.data) continue;
+      // Only insert if this section type is in the selected open sections
+      if (activeSections.length > 0 && !activeSections.includes(section.key)) continue;
       await connection.execute(
         `INSERT INTO waiver_sections
            (waiver_id, section_type, instructions, extra_data, file_path_1, file_path_2)
@@ -5166,9 +5204,6 @@ app.get('/api/waiver/details/:waiverId', async (req, res) => {
       reworkData: sectionMap['rework'] || {},
       labelData: sectionMap['label'] || {},
     };
-
-    console.log('Response Data:');
-    console.dir(responseData, { depth: null });
 
     res.json(responseData);
 
@@ -8578,6 +8613,159 @@ app.use((err, req, res, next) => {
  * Start the Express server
  * Default port 5000 for development, configurable via environment
  */
+// ── Escape Tracker ────────────────────────────────────────────────────────────
+
+// GET all options (suppliers, phases, fail_modes)
+app.get('/api/escape/options', async (req, res) => {
+  try {
+    const [rows] = await db.promise().query(
+      'SELECT `type`, `value` FROM escape_options ORDER BY id ASC'
+    );
+    const result = { suppliers: [], phases: [], failmodes: [] };
+    rows.forEach(r => {
+      if (r.type === 'supplier')  result.suppliers.push(r.value);
+      if (r.type === 'phase')     result.phases.push(r.value);
+      if (r.type === 'fail_mode') result.failmodes.push(r.value);
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch options', message: err.message });
+  }
+});
+
+// POST add a new option
+app.post('/api/escape/options', async (req, res) => {
+  const { type, value } = req.body;
+  if (!type || !value) return res.status(400).json({ error: 'type and value required' });
+  if (!['supplier','phase','fail_mode'].includes(type))
+    return res.status(400).json({ error: 'Invalid type' });
+  try {
+    await db.promise().query(
+      'INSERT INTO escape_options (`type`, `value`) VALUES (?, ?)',
+      [type, value.trim()]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY')
+      return res.status(409).json({ error: 'Already exists' });
+    res.status(500).json({ error: 'Failed to add option', message: err.message });
+  }
+});
+
+// DELETE an option
+app.delete('/api/escape/options/:type/:value', async (req, res) => {
+  const { type, value } = req.params;
+  try {
+    await db.promise().query(
+      'DELETE FROM escape_options WHERE `type` = ? AND `value` = ?',
+      [type, decodeURIComponent(value)]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete option', message: err.message });
+  }
+});
+
+// GET all escape records
+app.get('/api/escape/records', async (req, res) => {
+  try {
+    const [rows] = await db.promise().query(
+      `SELECT r.*, DATEDIFF(CURDATE(), r.date_reported) AS open_tpt,
+              GROUP_CONCAT(p.file_path) AS photo_paths
+       FROM escape_records r
+       LEFT JOIN escape_photos p ON p.escape_id = r.id
+       GROUP BY r.id
+       ORDER BY r.date_reported DESC`
+    );
+    const records = rows.map(r => ({
+      ...r,
+      photos: r.photo_paths ? r.photo_paths.split(',') : []
+    }));
+    res.json(records);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch records', message: err.message });
+  }
+});
+
+// POST create escape record
+app.post('/api/escape/records', async (req, res) => {
+  const { id, supplier, date_reported, part_number, build_revision, phase,
+    product_desc, serial_number, problem_statement, failure_mode,
+    qty_affected, root_cause, corrective_action, issue_status,
+    close_date, notes, submitted_by } = req.body;
+  try {
+    await db.promise().query(
+      `INSERT INTO escape_records
+       (id, supplier, date_reported, part_number, build_revision, phase,
+        product_desc, serial_number, problem_statement, failure_mode,
+        qty_affected, root_cause, corrective_action, issue_status,
+        close_date, notes, submitted_by)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [id, supplier, date_reported, part_number, build_revision, phase,
+       product_desc, serial_number, problem_statement, failure_mode,
+       qty_affected || 0, root_cause, corrective_action, issue_status || 'Open',
+       close_date || null, notes, submitted_by]
+    );
+    res.json({ success: true, id });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY')
+      return res.status(409).json({ error: 'Escape ID already exists' });
+    res.status(500).json({ error: 'Failed to create record', message: err.message });
+  }
+});
+
+// PATCH update escape record
+app.patch('/api/escape/records/:id', async (req, res) => {
+  const { id } = req.params;
+  const { supplier, date_reported, part_number, build_revision, phase,
+    product_desc, serial_number, problem_statement, failure_mode,
+    qty_affected, root_cause, corrective_action, issue_status,
+    close_date, notes } = req.body;
+  try {
+    await db.promise().query(
+      `UPDATE escape_records SET
+       supplier=?, date_reported=?, part_number=?, build_revision=?, phase=?,
+       product_desc=?, serial_number=?, problem_statement=?, failure_mode=?,
+       qty_affected=?, root_cause=?, corrective_action=?, issue_status=?,
+       close_date=?, notes=?, updated_at=CURRENT_TIMESTAMP
+       WHERE id=?`,
+      [supplier, date_reported, part_number, build_revision, phase,
+       product_desc, serial_number, problem_statement, failure_mode,
+       qty_affected || 0, root_cause, corrective_action, issue_status,
+       close_date || null, notes, id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update record', message: err.message });
+  }
+});
+
+// DELETE escape record
+app.delete('/api/escape/records/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await db.promise().query('DELETE FROM escape_records WHERE id = ?', [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete record', message: err.message });
+  }
+});
+
+// POST upload escape photo
+app.post('/api/escape/photos/:escapeId', async (req, res) => {
+  const { escapeId } = req.params;
+  const { file_path } = req.body;
+  try {
+    await db.promise().query(
+      'INSERT INTO escape_photos (escape_id, file_path) VALUES (?, ?)',
+      [escapeId, file_path]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to save photo', message: err.message });
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 const HOST = process.env.HOST || '0.0.0.0';
 

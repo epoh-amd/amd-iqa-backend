@@ -4,6 +4,8 @@ const cors = require('cors');
 const nodemailer = require('nodemailer');
 const cron = require('node-cron');
 const axios = require('axios'); // <-- for fetching backend data
+const path = require('path');
+const fs = require('fs');
 const { generatePieChartBase64, generateBarChartBase64, generateWeeklyChart, generateLocationAllocationChartBase64, generateLocationAllocationChartBase64NonStacked, generateBuildDeliveryChartBase64, generateFactoryChartBase64, generateBuildDeliveryChartBase641 } = require('../utils/generateCharts');
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -826,7 +828,7 @@ router.post('/waiver/requestor-notify', async (req, res) => {
   }
 
   const notifierEmails = await getNotifierEmails();
-  const defaultCcEmails = ['LayLing.Chew@amd.com', 'Amanda.KoayBeeWah@amd.com'];
+  const defaultCcEmails = ['LayLing.Chew@amd.com'];
   const toSet = new Set(recipientEmails.map(e => e.toLowerCase()));
   const allCcRequestor = [...new Set([...(ccEmail ? [ccEmail] : []), ...notifierEmails, ...defaultCcEmails].filter(e => !toSet.has(e.toLowerCase())))];
 
@@ -910,6 +912,16 @@ router.post('/waiver/notify', async (req, res) => {
     content: Buffer.from(pdfBase64, 'base64'),
     contentType: 'application/pdf'
   }] : [];
+
+  // Save PDF to disk for reuse in approval email
+  if (pdfBase64) {
+    try {
+      const pdfPath = path.join(__dirname, '..', 'drafts', `waiver_${waiverId}.pdf`);
+      fs.writeFileSync(pdfPath, Buffer.from(pdfBase64, 'base64'));
+    } catch (saveErr) {
+      console.error('Failed to save waiver PDF:', saveErr.message);
+    }
+  }
 
   // Attach uploaded files
   if (Array.isArray(uploadedFilePaths)) {
@@ -1164,7 +1176,22 @@ async function notifyRequestor(pool, waiverId, status, actionBy, cancelReason) {
     const notifierEmails = await getNotifierEmails();
     const toSetNotifyRequestor = new Set(toEmails.map(e => e.toLowerCase()));
     const allCcNotify = [...new Set([...ccEmails, ...notifierEmails].filter(e => !toSetNotifyRequestor.has(e.toLowerCase())))];
-    const mailOptions = { from: '"AMD PDQD System" <noreply@amd.com>', to: toEmails.join(','), subject, html };
+    const mailOptions = { from: '"AMD PDQD System" <noreply@amd.com>', to: toEmails.join(','), subject, html, attachments: [] };
+
+    // Attach saved PDF if this is an approval notification
+    if (isApproved) {
+      const pdfPath = path.join(__dirname, '..', 'drafts', `waiver_${waiverId}.pdf`);
+      if (fs.existsSync(pdfPath)) {
+        mailOptions.attachments.push({
+          filename: `${waiverId}.pdf`,
+          content: fs.readFileSync(pdfPath),
+          contentType: 'application/pdf'
+        });
+        // Delete after reading — no longer needed once sent
+        try { fs.unlinkSync(pdfPath); } catch {}
+      }
+    }
+
     if (allCcNotify.length) mailOptions.cc = allCcNotify.join(',');
     await transporter.sendMail(mailOptions);
   } catch (err) {
@@ -1427,8 +1454,8 @@ router.post('/waiver/status-notify', async (req, res) => {
     if (namesToLookup.length > 0) {
       const placeholders = namesToLookup.map(() => '?').join(',');
       const [userRows] = await pool.promise().query(
-        `SELECT full_name, email FROM users WHERE full_name IN (${placeholders}) AND email IS NOT NULL AND email != ''`,
-        namesToLookup
+        `SELECT full_name, email FROM users WHERE LOWER(full_name) IN (${placeholders}) AND email IS NOT NULL AND email != '' AND status = 'active'`,
+        namesToLookup.map(n => n.toLowerCase())
       );
       userRows.forEach(r => { emailMap[r.full_name] = r.email; });
     }
@@ -1512,11 +1539,75 @@ router.post('/waiver/status-notify', async (req, res) => {
     const toSetStatus = new Set(toEmails.map(e => e.toLowerCase()));
     const allCcStatus = [...new Set([...ccEmails, ...notifierEmails].filter(e => !toSetStatus.has(e.toLowerCase())))];
 
+    // Attach PDF for Approved status — read saved PDF from disk
+    let pdfAttachment = null;
+    if (isApproved) {
+      try {
+        const pdfPath = path.join(__dirname, '..', 'drafts', `waiver_${waiverId}.pdf`);
+        if (fs.existsSync(pdfPath)) {
+          pdfAttachment = {
+            filename: `${waiverId}.pdf`,
+            content: fs.readFileSync(pdfPath),
+            contentType: 'application/pdf'
+          };
+          try { fs.unlinkSync(pdfPath); } catch {}
+        } else {
+          // Fallback: generate simple PDF using puppeteer if saved PDF not found
+          const puppeteer = require('puppeteer');
+
+        const waiverHtml = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+  body { font-family: Arial, sans-serif; padding: 32px; color: #222; font-size: 13px; }
+  h1 { color: #00549A; font-size: 18px; margin-bottom: 4px; }
+  .subtitle { color: #888; font-size: 12px; margin-bottom: 24px; }
+  .badge { display:inline-block; background:#e8f5e9; color:#2e7d32; padding:3px 12px; border-radius:12px; font-weight:700; font-size:12px; }
+  table { width:100%; border-collapse:collapse; margin-bottom:20px; }
+  th { background:#00549A; color:#fff; padding:8px 12px; text-align:left; font-size:12px; }
+  td { padding:8px 12px; border-bottom:1px solid #eee; vertical-align:top; }
+  td:first-child { font-weight:600; width:200px; color:#555; }
+  .section-title { font-size:13px; font-weight:700; color:#00549A; margin:20px 0 8px; border-bottom:2px solid #00549A; padding-bottom:4px; }
+  .footer { margin-top:32px; font-size:11px; color:#aaa; border-top:1px solid #eee; padding-top:12px; }
+</style></head>
+<body>
+  <h1>AMD Waiver Request Form</h1>
+  <div class="subtitle">Automated IQA Dashboard — Internal Use Only</div>
+  <div class="badge">✓ Approved</div>
+
+  <div class="section-title">Waiver Details</div>
+  <table>
+    <tr><td>Waiver ID</td><td>${waiverId}</td></tr>
+    <tr><td>Part Number</td><td>${waiver.part_number || '-'}</td></tr>
+    <tr><td>Description</td><td>${waiver.description || '-'}</td></tr>
+    <tr><td>Revision</td><td>${waiver.revision || '-'}</td></tr>
+    <tr><td>Assembly Level</td><td>${assemblyLevelText}</td></tr>
+    <tr><td>Requestor</td><td>${requestorNames.join(', ') || '-'}</td></tr>
+    <tr><td>Submitted By</td><td>${waiver.submitted_by || '-'}</td></tr>
+    <tr><td>Approved By</td><td>${actionBy || '-'}</td></tr>
+    <tr><td>Reason / Justification</td><td>${(waiver.reason || '-').replace(/\n/g, '<br>')}</td></tr>
+  </table>
+
+  <div class="footer">This is an automated document generated by AMD PDQD System.</div>
+</body></html>`;
+
+        const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+        const page = await browser.newPage();
+        await page.setContent(waiverHtml, { waitUntil: 'networkidle0' });
+        const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true, margin: { top: '20px', bottom: '20px', left: '20px', right: '20px' } });
+        await browser.close();
+        pdfAttachment = { filename: `${waiverId}.pdf`, content: pdfBuffer, contentType: 'application/pdf' };
+        }
+      } catch (pdfErr) {
+        console.error('Failed to generate waiver PDF:', pdfErr.message);
+      }
+    }
+
     const mailOptions = {
       from: '"AMD PDQD System" <noreply@amd.com>',
       to: toEmails.join(','),
       subject,
       html: bodyHtml,
+      attachments: pdfAttachment ? [pdfAttachment] : []
     };
     if (allCcStatus.length > 0) mailOptions.cc = allCcStatus.join(',');
 

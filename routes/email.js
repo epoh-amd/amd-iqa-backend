@@ -1151,7 +1151,7 @@ async function notifyRequestor(pool, waiverId, status, actionBy, cancelReason) {
           <p>Dear All,</p>
           <p>
             The waiver <strong># ${waiverId}</strong> has been <strong style="color:#28a745;">Approved</strong> in
-            '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'.
+            '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' Rev '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'.
           </p>
           <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
             This is an automated notification from the AMD PDQD System. Please do not reply to this email.
@@ -1161,7 +1161,7 @@ async function notifyRequestor(pool, waiverId, status, actionBy, cancelReason) {
           <p>Dear All,</p>
           <p>
             The waiver <strong># ${waiverId}</strong> has been <strong style="color:#dc3545;">Rejected</strong> in
-            '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'. Do edit or cancel this waiver if it is no longer valid.
+            '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' Rev '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'. Do edit or cancel this waiver if it is no longer valid.
           </p>
           ${cancelReason ? `
             <p style="background:#f8f8f8;padding:12px;border-radius:6px;font-size:14px;">
@@ -1484,7 +1484,7 @@ router.post('/waiver/status-notify', async (req, res) => {
         <p>Dear All,</p>
         <p>
           The waiver <strong># ${waiverId}</strong> has been <strong style="color:#28a745;">Approved</strong> in
-          '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'.
+          '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' Rev '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'.
         </p>
         <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
           This is an automated notification from the AMD PDQD System. Please do not reply to this email.
@@ -1495,7 +1495,7 @@ router.post('/waiver/status-notify', async (req, res) => {
         <p>Dear All,</p>
         <p>
           The waiver <strong># ${waiverId}</strong> has been <strong style="color:#e65100;">Cancelled</strong> in
-          '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'.
+          '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' Rev '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'.
         </p>
         ${cancelReason ? `
           <p style="background:#f8f8f8;padding:12px;border-radius:6px;font-size:14px;">
@@ -1511,7 +1511,7 @@ router.post('/waiver/status-notify', async (req, res) => {
         <p>Dear All,</p>
         <p>
           The waiver <strong># ${waiverId}</strong> has been <strong style="color:#555;">Closed</strong> in
-          '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' '${waiver.revision || '-'}'.
+          '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' Rev '${waiver.revision || '-'}'.
         </p>
         <p style="color: #888; font-size: 12px; margin-top: 24px; border-top: 1px solid #eee; padding-top: 12px;">
           This is an automated notification from the AMD PDQD System. Please do not reply to this email.
@@ -1522,7 +1522,7 @@ router.post('/waiver/status-notify', async (req, res) => {
         <p>Dear All,</p>
         <p>
           The waiver <strong># ${waiverId}</strong> has been <strong style="color:#dc3545;">Rejected</strong> in
-          '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'. Do edit or cancel this waiver if it is no longer valid.
+          '${assemblyLevelText}' level '${waiver.part_number || '-'}' '${waiver.description || '-'}' Rev '${waiver.revision || '-'}' due to '${waiver.reason || '-'}'. Do edit or cancel this waiver if it is no longer valid.
         </p>
         ${cancelReason ? `
           <p style="background:#f8f8f8;padding:12px;border-radius:6px;font-size:14px;">

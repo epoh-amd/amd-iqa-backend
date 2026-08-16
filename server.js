@@ -139,7 +139,9 @@ const multerStorage = multer.diskStorage({
     cb(null, "drafts/");
   },
   filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
+    const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const uid = Math.random().toString(36).slice(2, 8);
+    cb(null, uid + '_' + safeName);
   }
 });
 
@@ -4912,7 +4914,7 @@ app.put('/api/waivers/:waiverId/edit', async (req, res) => {
     assemblyLevel, requestor, startDate, endDate, waiverType,
     reason, workorder, workorderQty,
     materialRows, processData, testData, specData, reworkData, labelData,
-    openSections, modifiedBy
+    openSections, modifiedBy, materialOtherNotes, materialOtherFiles
   } = req.body;
 
   // helper at the top of the route (or inline)
@@ -4966,6 +4968,7 @@ const toDateOnly = (val) => val ? val.toString().slice(0, 10) : null;
       );
       for (let i = 0; i < materialRows.length; i++) {
         const r = materialRows[i];
+        const filePaths = Array.isArray(r.file) ? r.file.filter(Boolean) : r.file ? [r.file] : [];
         await connection.execute(
           `INSERT INTO waiver_material_rows
              (waiver_id, sort_order, current_part, current_part_description,
@@ -4977,22 +4980,52 @@ const toDateOnly = (val) => val ? val.toString().slice(0, 10) : null;
             r.currentPart || null, r.currentPartDescription || null,
             r.noOfPer || null, r.refdes || null,
             r.newPart || null, r.newPartDescription || null,
-            r.action || null, r.instructions || null, r.file || null
+            r.action || null, r.instructions || null,
+            filePaths.length ? JSON.stringify(filePaths) : null
           ]
         );
       }
     }
 
-    // 3. Update sections
+    // 3. Update sections — fetch existing first to preserve areaFiles/otherFiles if omitted in incoming data
+    const [existingRowsApprover] = await connection.query(
+      'SELECT section_type, extra_data FROM waiver_sections WHERE waiver_id = ?', [waiverId]
+    );
+    const existingExtraApprover = {};
+    existingRowsApprover.forEach(r => {
+      const raw = r.extra_data;
+      existingExtraApprover[r.section_type] = (typeof raw === 'string') ? (() => { try { return JSON.parse(raw || '{}'); } catch { return {}; } })() : (raw || {});
+    });
+
+    const safeMergeA = (incoming, existing, key, fallback) =>
+      (incoming !== undefined && incoming !== null) ? incoming : (existing?.[key] ?? fallback);
+
     const activeApproverSections = Array.isArray(openSections) ? openSections : [];
     const sections = [
-      { type: 'process', key: 'process', data: processData, extra: JSON.stringify({ areas: processData?.areas, areaInstructions: processData?.areaInstructions, areaFiles: processData?.areaFiles }) },
-      { type: 'test',    key: 'test',    data: testData,    extra: JSON.stringify({ rows: testData?.rows, areas: testData?.areas, areaInstructions: testData?.areaInstructions, areaFiles: testData?.areaFiles }) },
+      { type: 'process', key: 'process', data: processData, extra: JSON.stringify({
+          areas:            safeMergeA(processData?.areas,            existingExtraApprover['process'], 'areas',            []),
+          areaInstructions: safeMergeA(processData?.areaInstructions, existingExtraApprover['process'], 'areaInstructions', {}),
+          areaFiles:        safeMergeA(processData?.areaFiles,        existingExtraApprover['process'], 'areaFiles',        {}),
+          otherNotes:       safeMergeA(processData?.otherNotes,       existingExtraApprover['process'], 'otherNotes',       ''),
+          otherFiles:       safeMergeA(processData?.otherFiles,       existingExtraApprover['process'], 'otherFiles',       []),
+        }) },
+      { type: 'test', key: 'test', data: testData, extra: JSON.stringify({
+          rows:             safeMergeA(testData?.rows,             existingExtraApprover['test'], 'rows',             []),
+          areas:            safeMergeA(testData?.areas,            existingExtraApprover['test'], 'areas',            []),
+          areaInstructions: safeMergeA(testData?.areaInstructions, existingExtraApprover['test'], 'areaInstructions', {}),
+          areaFiles:        safeMergeA(testData?.areaFiles,        existingExtraApprover['test'], 'areaFiles',        {}),
+          otherNotes:       safeMergeA(testData?.otherNotes,       existingExtraApprover['test'], 'otherNotes',       ''),
+          otherFiles:       safeMergeA(testData?.otherFiles,       existingExtraApprover['test'], 'otherFiles',       []),
+        }) },
+      { type: 'material_attachment', key: 'material_attachment', data: {}, extra: JSON.stringify({
+          otherNotes: safeMergeA(materialOtherNotes, existingExtraApprover['material_attachment'], 'otherNotes', ''),
+          otherFiles: safeMergeA(materialOtherFiles, existingExtraApprover['material_attachment'], 'otherFiles', []),
+        }) },
     ];
 
     for (const section of sections) {
       if (!section.data) continue;
-      if (activeApproverSections.length > 0 && !activeApproverSections.includes(section.key)) continue;
+      if (section.key !== 'material_attachment' && activeApproverSections.length > 0 && !activeApproverSections.includes(section.key)) continue;
       await connection.execute(
         `INSERT INTO waiver_sections
            (waiver_id, section_type, instructions, extra_data, file_path_1, file_path_2)
@@ -5032,7 +5065,8 @@ app.post('/api/waivers/submit', async (req, res) => {
     waiverId, partNumber, revision, description, subcontractor,
     assemblyLevel, requestor, startDate, endDate, waiverType,
     reason, workorder, workorderQty, submittedBy, status, parentWaiverId,
-    materialRows, processData, testData, specData, reworkData, labelData, openSections
+    materialRows, processData, testData, specData, reworkData, labelData, openSections,
+    materialOtherNotes, materialOtherFiles
   } = req.body;
 
   if (!waiverId) {
@@ -5084,6 +5118,7 @@ app.post('/api/waivers/submit', async (req, res) => {
       );
       for (let i = 0; i < materialRows.length; i++) {
         const r = materialRows[i];
+        const filePaths = Array.isArray(r.file) ? r.file.filter(Boolean) : r.file ? [r.file] : [];
         await connection.execute(
           `INSERT INTO waiver_material_rows
              (waiver_id, sort_order, current_part, current_part_description,
@@ -5095,23 +5130,54 @@ app.post('/api/waivers/submit', async (req, res) => {
             r.currentPart || null, r.currentPartDescription || null,
             r.noOfPer || null, r.refdes || null,
             r.newPart || null, r.newPartDescription || null,
-            r.action || null, r.instructions || null, r.file || null
+            r.action || null, r.instructions || null,
+            filePaths.length ? JSON.stringify(filePaths) : null
           ]
         );
       }
     }
 
     // 3. Insert sections — only for selected waiver types
+    // Fetch existing section data so areaFiles/otherFiles are preserved if incoming data omits them
+    const [existingRows] = await connection.query(
+      'SELECT section_type, extra_data FROM waiver_sections WHERE waiver_id = ?', [waiverId]
+    );
+    const existingExtra = {};
+    existingRows.forEach(r => {
+      const raw = r.extra_data;
+      existingExtra[r.section_type] = (typeof raw === 'string') ? (() => { try { return JSON.parse(raw || '{}'); } catch { return {}; } })() : (raw || {});
+    });
+
+    const safeMerge = (incoming, existing, key, fallback) =>
+      (incoming !== undefined && incoming !== null) ? incoming : (existing?.[key] ?? fallback);
+
     const activeSections = Array.isArray(openSections) ? openSections : [];
     const sections = [
-      { type: 'process', key: 'process', data: processData, extra: JSON.stringify({ areas: processData?.areas, areaInstructions: processData?.areaInstructions, areaFiles: processData?.areaFiles }) },
-      { type: 'test',    key: 'test',    data: testData,    extra: JSON.stringify({ rows: testData?.rows, areas: testData?.areas, areaInstructions: testData?.areaInstructions, areaFiles: testData?.areaFiles }) },
+      { type: 'process', key: 'process', data: processData, extra: JSON.stringify({
+          areas:              safeMerge(processData?.areas,              existingExtra['process'], 'areas',              []),
+          areaInstructions:   safeMerge(processData?.areaInstructions,   existingExtra['process'], 'areaInstructions',   {}),
+          areaFiles:          safeMerge(processData?.areaFiles,          existingExtra['process'], 'areaFiles',          {}),
+          otherNotes:         safeMerge(processData?.otherNotes,         existingExtra['process'], 'otherNotes',         ''),
+          otherFiles:         safeMerge(processData?.otherFiles,         existingExtra['process'], 'otherFiles',         []),
+        }) },
+      { type: 'test', key: 'test', data: testData, extra: JSON.stringify({
+          rows:               safeMerge(testData?.rows,               existingExtra['test'], 'rows',               []),
+          areas:              safeMerge(testData?.areas,              existingExtra['test'], 'areas',              []),
+          areaInstructions:   safeMerge(testData?.areaInstructions,   existingExtra['test'], 'areaInstructions',   {}),
+          areaFiles:          safeMerge(testData?.areaFiles,          existingExtra['test'], 'areaFiles',          {}),
+          otherNotes:         safeMerge(testData?.otherNotes,         existingExtra['test'], 'otherNotes',         ''),
+          otherFiles:         safeMerge(testData?.otherFiles,         existingExtra['test'], 'otherFiles',         []),
+        }) },
+      { type: 'material_attachment', key: 'material_attachment', data: {}, extra: JSON.stringify({
+          otherNotes: safeMerge(materialOtherNotes, existingExtra['material_attachment'], 'otherNotes', ''),
+          otherFiles: safeMerge(materialOtherFiles, existingExtra['material_attachment'], 'otherFiles', []),
+        }) },
     ];
 
     for (const section of sections) {
       if (!section.data) continue;
-      // Only insert if this section type is in the selected open sections
-      if (activeSections.length > 0 && !activeSections.includes(section.key)) continue;
+      // material_attachment is a global section — always write it regardless of openSections
+      if (section.key !== 'material_attachment' && activeSections.length > 0 && !activeSections.includes(section.key)) continue;
       await connection.execute(
         `INSERT INTO waiver_sections
            (waiver_id, section_type, instructions, extra_data, file_path_1, file_path_2)
@@ -5203,6 +5269,7 @@ app.get('/api/waiver/details/:waiverId', async (req, res) => {
       specData: sectionMap['spec'] || {},
       reworkData: sectionMap['rework'] || {},
       labelData: sectionMap['label'] || {},
+      material_attachment: sectionMap['material_attachment'] || {},
     };
 
     res.json(responseData);
@@ -7321,6 +7388,8 @@ app.post("/api/waiver/draft", (req, res) => {
   const { userId,
     formData,
     materialRows,
+    materialOtherNotes,
+    materialOtherFiles,
     processData,
     testData,
     specData,
@@ -7362,7 +7431,7 @@ app.post("/api/waiver/draft", (req, res) => {
     [
       userId,
       waiverId,
-      JSON.stringify(formData ?? {}),
+      JSON.stringify({ ...(formData ?? {}), materialOtherNotes: materialOtherNotes ?? '', materialOtherFiles: materialOtherFiles ?? [] }),
       JSON.stringify(materialRows ?? []),
       JSON.stringify(processData ?? {}),
       JSON.stringify(testData ?? {}),
@@ -7488,9 +7557,12 @@ app.get("/api/waiver/draft/:userId/:waiverId", (req, res) => {
       }
     };
 
+    const parsedFormData = safeParse(row.form_data, {});
     return res.json({
-      formData: safeParse(row.form_data, null),
+      formData: parsedFormData,
       materialRows: safeParse(row.material_rows, null),
+      materialOtherNotes: parsedFormData.materialOtherNotes || '',
+      materialOtherFiles: parsedFormData.materialOtherFiles || [],
       processData: safeParse(row.process_data, null),
       testData: safeParse(row.test_data, null),
       specData: safeParse(row.spec_data, null),

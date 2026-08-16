@@ -828,7 +828,7 @@ router.post('/waiver/requestor-notify', async (req, res) => {
   }
 
   const notifierEmails = await getNotifierEmails();
-  const defaultCcEmails = ['LayLing.Chew@amd.com', 'Amanda.KoayBeeWah@amd.com'];
+  const defaultCcEmails = [''];
   const toSet = new Set(recipientEmails.map(e => e.toLowerCase()));
   const allCcRequestor = [...new Set([...(ccEmail ? [ccEmail] : []), ...notifierEmails, ...defaultCcEmails].filter(e => !toSet.has(e.toLowerCase())))];
 
@@ -870,9 +870,52 @@ router.post('/waiver/requestor-notify', async (req, res) => {
 
 router.post('/waiver/notify', async (req, res) => {
   const { waiverId, partNumber, description, revision, assemblyLevel, subcontractor, reason, submittedBy, approvers, requestors, isUpdate, pdfBase64, uploadedFilePaths } = req.body;
+  console.log('[waiver/notify] uploadedFilePaths received:', JSON.stringify(uploadedFilePaths));
   if (!approvers || !approvers.length) return res.json({ success: true });
   const path = require('path');
   const fs = require('fs');
+
+  // Collect all attachment file paths from DB (sections + material rows) so nothing is missed
+  const dbFilePaths = new Set(Array.isArray(uploadedFilePaths) ? uploadedFilePaths.filter(Boolean) : []);
+  try {
+    const pool = getGlobalPool();
+
+    // section areaFiles + otherFiles
+    const [sections] = await pool.promise().query(
+      'SELECT section_type, extra_data FROM waiver_sections WHERE waiver_id = ?', [waiverId]
+    );
+    const parseExtra = (raw) => {
+      if (!raw) return {};
+      if (typeof raw === 'string') { try { return JSON.parse(raw); } catch { return {}; } }
+      if (typeof raw === 'object') return raw;
+      return {};
+    };
+    sections.forEach(s => {
+      const d = parseExtra(s.extra_data);
+      if (d.areaFiles && typeof d.areaFiles === 'object') {
+        Object.values(d.areaFiles).forEach(v => {
+          if (Array.isArray(v)) v.filter(Boolean).forEach(f => dbFilePaths.add(f));
+          else if (v) dbFilePaths.add(v);
+        });
+      }
+      if (Array.isArray(d.otherFiles)) d.otherFiles.filter(Boolean).forEach(f => dbFilePaths.add(f));
+    });
+
+    // material row file_path column
+    const [matRows] = await pool.promise().query(
+      'SELECT file_path FROM waiver_material_rows WHERE waiver_id = ?', [waiverId]
+    );
+    matRows.forEach(r => {
+      const fp = r.file_path;
+      if (!fp) return;
+      const arr = Array.isArray(fp) ? fp : (typeof fp === 'string' ? (() => { try { return JSON.parse(fp); } catch { return [fp]; } })() : []);
+      arr.filter(Boolean).forEach(f => dbFilePaths.add(f));
+    });
+
+    console.log('[waiver/notify] all file paths from DB:', [...dbFilePaths]);
+  } catch (dbErr) {
+    console.error('[waiver/notify] Failed to query DB for attachments:', dbErr.message);
+  }
 
   const token = crypto.createHmac('sha256', SECRET).update(waiverId).digest('hex');
   const approvalLink = `${apiUrl}/email/waiver/approve-link?id=${waiverId}&token=${token}`;
@@ -923,18 +966,16 @@ router.post('/waiver/notify', async (req, res) => {
     }
   }
 
-  // Attach uploaded files
-  if (Array.isArray(uploadedFilePaths)) {
-    uploadedFilePaths.forEach(filePath => {
-      if (!filePath) return;
-      const absPath = path.join(__dirname, '..', filePath.replace(/^[\/\\]+/, ''));
-      if (!fs.existsSync(absPath)) return;
-      attachments.push({
-        filename: path.basename(absPath),
-        path: absPath,
-      });
-    });
-  }
+  // Attach all files collected from DB
+  dbFilePaths.forEach(filePath => {
+    if (!filePath) return;
+    const absPath = path.join(__dirname, '..', filePath.replace(/^[\/\\]+/, ''));
+    if (!fs.existsSync(absPath)) {
+      console.warn('[waiver/notify] attachment not found on disk, skipping:', absPath);
+      return;
+    }
+    attachments.push({ filename: path.basename(absPath), path: absPath });
+  });
 
   try {
     await createTransporter().sendMail({
@@ -1176,22 +1217,71 @@ async function notifyRequestor(pool, waiverId, status, actionBy, cancelReason) {
     const notifierEmails = await getNotifierEmails();
     const toSetNotifyRequestor = new Set(toEmails.map(e => e.toLowerCase()));
     const allCcNotify = [...new Set([...ccEmails, ...notifierEmails].filter(e => !toSetNotifyRequestor.has(e.toLowerCase())))];
-    const mailOptions = { from: '"AMD PDQD System" <noreply@amd.com>', to: toEmails.join(','), subject, html, attachments: [] };
+    const attachments = [];
 
     // Attach saved PDF if this is an approval notification
     if (isApproved) {
       const pdfPath = path.join(__dirname, '..', 'drafts', `waiver_${waiverId}.pdf`);
       if (fs.existsSync(pdfPath)) {
-        mailOptions.attachments.push({
+        attachments.push({
           filename: `${waiverId}.pdf`,
           content: fs.readFileSync(pdfPath),
           contentType: 'application/pdf'
         });
-        // Delete after reading — no longer needed once sent
         try { fs.unlinkSync(pdfPath); } catch {}
       }
     }
 
+    // Collect all uploaded file attachments from material rows and sections
+    try {
+      const [matRows] = await pool.promise().query(
+        'SELECT file_path FROM waiver_material_rows WHERE waiver_id = ?', [waiverId]
+      );
+      const [sections] = await pool.promise().query(
+        'SELECT file_path_1, file_path_2, extra_data FROM waiver_sections WHERE waiver_id = ?', [waiverId]
+      );
+
+      const collectPath = (fp) => {
+        if (!fp) return;
+        if (Array.isArray(fp)) { fp.forEach(collectPath); return; }
+        if (typeof fp === 'string') {
+          let paths = [];
+          try {
+            let p = JSON.parse(fp);
+            if (typeof p === 'string') p = JSON.parse(p);
+            paths = Array.isArray(p) ? p : [fp];
+          } catch { paths = [fp]; }
+          paths.filter(Boolean).forEach(p => {
+            const absPath = path.join(__dirname, '..', p.replace(/^[\/\\]+/, ''));
+            if (fs.existsSync(absPath)) {
+              attachments.push({ filename: path.basename(absPath), path: absPath });
+            } else {
+              console.warn('[notifyRequestor] attachment not found, skipping:', absPath);
+            }
+          });
+        }
+      };
+
+      console.log('[notifyRequestor] matRows file_path:', matRows.map(r => r.file_path));
+      console.log('[notifyRequestor] sections extra_data:', JSON.stringify(sections.map(s => s.extra_data)));
+      matRows.forEach(r => collectPath(r.file_path));
+      sections.forEach(s => {
+        collectPath(s.file_path_1);
+        collectPath(s.file_path_2);
+        if (s.extra_data) {
+          try {
+            const extra = typeof s.extra_data === 'string' ? JSON.parse(s.extra_data) : s.extra_data;
+            if (extra.areaFiles) Object.values(extra.areaFiles).forEach(v => collectPath(v));
+            if (extra.otherFiles) collectPath(extra.otherFiles);
+          } catch {}
+        }
+      });
+      console.log('[notifyRequestor] fileAttachments to send:', attachments.map(a => a.filename));
+    } catch (fetchErr) {
+      console.error('[notifyRequestor] failed to fetch file attachments:', fetchErr.message);
+    }
+
+    const mailOptions = { from: '"AMD PDQD System" <noreply@amd.com>', to: toEmails.join(','), subject, html, attachments };
     if (allCcNotify.length) mailOptions.cc = allCcNotify.join(',');
     await transporter.sendMail(mailOptions);
   } catch (err) {
@@ -1602,12 +1692,63 @@ router.post('/waiver/status-notify', async (req, res) => {
       }
     }
 
+    // Collect all uploaded file attachments from the waiver
+    const fileAttachments = [];
+    try {
+      const [matRows] = await pool.promise().query(
+        'SELECT file_path FROM waiver_material_rows WHERE waiver_id = ?', [waiverId]
+      );
+      const [sections] = await pool.promise().query(
+        'SELECT file_path_1, file_path_2, extra_data FROM waiver_sections WHERE waiver_id = ?', [waiverId]
+      );
+
+      const collectPath = (fp) => {
+        if (!fp) return;
+        if (Array.isArray(fp)) { fp.forEach(collectPath); return; }
+        if (typeof fp === 'string') {
+          let paths = [];
+          try {
+            let p = JSON.parse(fp);
+            if (typeof p === 'string') p = JSON.parse(p);
+            paths = Array.isArray(p) ? p : [fp];
+          } catch { paths = [fp]; }
+          paths.filter(Boolean).forEach(p => {
+            const absPath = path.join(__dirname, '..', p.replace(/^[\/\\]+/, ''));
+            if (fs.existsSync(absPath)) {
+              fileAttachments.push({ filename: path.basename(absPath), path: absPath });
+            } else {
+              console.warn('[status-notify] attachment not found, skipping:', absPath);
+            }
+          });
+        }
+      };
+
+      console.log('[status-notify] matRows file_path:', matRows.map(r => r.file_path));
+      console.log('[status-notify] sections extra_data:', JSON.stringify(sections.map(s => s.extra_data)));
+      matRows.forEach(r => collectPath(r.file_path));
+      sections.forEach(s => {
+        collectPath(s.file_path_1);
+        collectPath(s.file_path_2);
+        if (s.extra_data) {
+          try {
+            const extra = typeof s.extra_data === 'string' ? JSON.parse(s.extra_data) : s.extra_data;
+            if (extra.areaFiles) Object.values(extra.areaFiles).forEach(v => collectPath(v));
+            if (extra.otherFiles) collectPath(extra.otherFiles);
+          } catch {}
+        }
+      });
+      console.log('[status-notify] fileAttachments to send:', fileAttachments.map(a => a.filename));
+    } catch (fetchErr) {
+      console.error('[status-notify] failed to fetch file attachments:', fetchErr.message);
+    }
+
+    console.log('[status-notify] fileAttachments to send:', fileAttachments.map(a => a.filename));
     const mailOptions = {
       from: '"AMD PDQD System" <noreply@amd.com>',
       to: toEmails.join(','),
       subject,
       html: bodyHtml,
-      attachments: pdfAttachment ? [pdfAttachment] : []
+      attachments: [...(pdfAttachment ? [pdfAttachment] : []), ...fileAttachments]
     };
     if (allCcStatus.length > 0) mailOptions.cc = allCcStatus.join(',');
 

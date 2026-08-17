@@ -277,6 +277,7 @@ const dbConfig = {
   // Performance optimizations
   charset: 'utf8mb4',
   timezone: '+08:00',
+  dateStrings: ['DATE'],  // Return DATE columns as "YYYY-MM-DD" strings, not Date objects
   multipleStatements: false,        // Security
   reconnect: true,                  // Auto-reconnect
 

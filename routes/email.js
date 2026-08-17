@@ -6,6 +6,9 @@ const cron = require('node-cron');
 const axios = require('axios'); // <-- for fetching backend data
 const path = require('path');
 const fs = require('fs');
+
+// Strip the 6-char random prefix added by multer (e.g. "abc123_filename.pdf" → "filename.pdf")
+const displayFilename = (absPath) => path.basename(absPath).replace(/^[a-z0-9]{6}_/i, '');
 const { generatePieChartBase64, generateBarChartBase64, generateWeeklyChart, generateLocationAllocationChartBase64, generateLocationAllocationChartBase64NonStacked, generateBuildDeliveryChartBase64, generateFactoryChartBase64, generateBuildDeliveryChartBase641 } = require('../utils/generateCharts');
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
@@ -974,7 +977,7 @@ router.post('/waiver/notify', async (req, res) => {
       console.warn('[waiver/notify] attachment not found on disk, skipping:', absPath);
       return;
     }
-    attachments.push({ filename: path.basename(absPath), path: absPath });
+    attachments.push({ filename: displayFilename(absPath), path: absPath });
   });
 
   try {
@@ -1254,7 +1257,7 @@ async function notifyRequestor(pool, waiverId, status, actionBy, cancelReason) {
           paths.filter(Boolean).forEach(p => {
             const absPath = path.join(__dirname, '..', p.replace(/^[\/\\]+/, ''));
             if (fs.existsSync(absPath)) {
-              attachments.push({ filename: path.basename(absPath), path: absPath });
+              attachments.push({ filename: displayFilename(absPath), path: absPath });
             } else {
               console.warn('[notifyRequestor] attachment not found, skipping:', absPath);
             }
@@ -1715,7 +1718,7 @@ router.post('/waiver/status-notify', async (req, res) => {
           paths.filter(Boolean).forEach(p => {
             const absPath = path.join(__dirname, '..', p.replace(/^[\/\\]+/, ''));
             if (fs.existsSync(absPath)) {
-              fileAttachments.push({ filename: path.basename(absPath), path: absPath });
+              fileAttachments.push({ filename: displayFilename(absPath), path: absPath });
             } else {
               console.warn('[status-notify] attachment not found, skipping:', absPath);
             }

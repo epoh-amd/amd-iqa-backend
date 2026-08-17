@@ -5247,6 +5247,13 @@ app.get('/api/waiver/details/:waiverId', async (req, res) => {
       };
     }
 
+    // Format DATE fields using local time to avoid UTC-offset shifting (e.g. UTC+8 midnight → previous day in UTC)
+    const fmtDate = (d) => {
+      if (!d) return null;
+      const dt = d instanceof Date ? d : new Date(d);
+      return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    };
+
     const responseData = {
       waiverId: waiver.waiver_id,
       partNumber: waiver.part_number,
@@ -5255,8 +5262,8 @@ app.get('/api/waiver/details/:waiverId', async (req, res) => {
       subcontractor: safeParse(waiver.subcontractor, waiver.subcontractor ? [waiver.subcontractor] : []),
       assemblyLevel: safeParse(waiver.assembly_level, waiver.assembly_level ? [waiver.assembly_level] : []),
       requestor: waiver.requestor,
-      startDate: waiver.start_date,
-      endDate: waiver.end_date,
+      startDate: fmtDate(waiver.start_date),
+      endDate: fmtDate(waiver.end_date),
       waiverType: safeParse(waiver.waiver_type, []),
       reason: waiver.reason,
       workorder: waiver.workorder,

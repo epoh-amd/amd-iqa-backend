@@ -5224,7 +5224,7 @@ app.get('/api/waiver/details/:waiverId', async (req, res) => {
     connection = await db.promise().getConnection();
 
     const [rows] = await connection.query(
-      'SELECT * FROM waivers WHERE waiver_id = ?', [waiverId]
+      `SELECT *, DATE_FORMAT(start_date, '%Y-%m-%d') AS start_date, DATE_FORMAT(end_date, '%Y-%m-%d') AS end_date FROM waivers WHERE waiver_id = ?`, [waiverId]
     );
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const waiver = rows[0];

@@ -277,7 +277,7 @@ const dbConfig = {
   // Performance optimizations
   charset: 'utf8mb4',
   timezone: '+08:00',
-  dateStrings: ['DATE'],  // Return DATE columns as "YYYY-MM-DD" strings, not Date objects
+  dateStrings: true,  // Return all date/datetime columns as plain strings, no Date objects created
   multipleStatements: false,        // Security
   reconnect: true,                  // Auto-reconnect
 
@@ -5224,7 +5224,7 @@ app.get('/api/waiver/details/:waiverId', async (req, res) => {
     connection = await db.promise().getConnection();
 
     const [rows] = await connection.query(
-      `SELECT *, DATE_FORMAT(start_date, '%Y-%m-%d') AS start_date, DATE_FORMAT(end_date, '%Y-%m-%d') AS end_date FROM waivers WHERE waiver_id = ?`, [waiverId]
+      'SELECT * FROM waivers WHERE waiver_id = ?', [waiverId]
     );
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
     const waiver = rows[0];
@@ -5248,11 +5248,12 @@ app.get('/api/waiver/details/:waiverId', async (req, res) => {
       };
     }
 
-    // Format DATE fields using local time to avoid UTC-offset shifting (e.g. UTC+8 midnight → previous day in UTC)
+    // Format DATE fields — with dateStrings:true, mysql2 returns "YYYY-MM-DD" strings directly
     const fmtDate = (d) => {
       if (!d) return null;
+      if (typeof d === 'string') return d.slice(0, 10); // already a plain string from mysql2
       const dt = d instanceof Date ? d : new Date(d);
-      return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+      return dt.toISOString().slice(0, 10); // fallback: use UTC to avoid server-timezone shift
     };
 
     const responseData = {

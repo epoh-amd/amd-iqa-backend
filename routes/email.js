@@ -831,7 +831,7 @@ router.post('/waiver/requestor-notify', async (req, res) => {
   }
 
   const notifierEmails = await getNotifierEmails();
-  const defaultCcEmails = ['', ''];
+  const defaultCcEmails = ['Amanda.KoayBeeWah@amd.com', 'LayLing.Chew@amd.com'];
   const toSet = new Set(recipientEmails.map(e => e.toLowerCase()));
   const allCcRequestor = [...new Set([...(ccEmail ? [ccEmail] : []), ...notifierEmails, ...defaultCcEmails].filter(e => !toSet.has(e.toLowerCase())))];
 

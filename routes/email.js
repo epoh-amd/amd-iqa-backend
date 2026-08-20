@@ -831,7 +831,7 @@ router.post('/waiver/requestor-notify', async (req, res) => {
   }
 
   const notifierEmails = await getNotifierEmails();
-  const defaultCcEmails = ['Amanda.KoayBeeWah@amd.com', 'LayLing.Chew@amd.com'];
+  const defaultCcEmails = ['', ''];
   const toSet = new Set(recipientEmails.map(e => e.toLowerCase()));
   const allCcRequestor = [...new Set([...(ccEmail ? [ccEmail] : []), ...notifierEmails, ...defaultCcEmails].filter(e => !toSet.has(e.toLowerCase())))];
 
@@ -1765,8 +1765,9 @@ router.post('/waiver/status-notify', async (req, res) => {
 });
 
 router.post('/waiver/workorder-notify', async (req, res) => {
-  const { waiverId, prevWorkorder, prevWorkorderQty, newWorkorder, newWorkorderQty, updatedBy } = req.body;
+  const { waiverId, prevWorkorder, prevWorkorderQty, newWorkorder, newWorkorderQty, updatedBy, approvers } = req.body;
   if (!waiverId) return res.status(400).json({ error: 'Missing waiverId' });
+  if (!approvers || !approvers.length) return res.json({ success: true });
 
   try {
     const pool = getGlobalPool();
@@ -1778,7 +1779,7 @@ router.post('/waiver/workorder-notify', async (req, res) => {
     const waiver = rows[0];
     if (!waiver) return res.json({ success: false, message: 'Waiver not found' });
 
-    // Resolve requestor names to emails for CC
+    // Resolve requestor/submitter names to emails for CC
     let requestorNames = [];
     try {
       const parsed = JSON.parse(waiver.requestor);
@@ -1796,21 +1797,15 @@ router.post('/waiver/workorder-notify', async (req, res) => {
       ccList = userRows.map(r => r.email).filter(Boolean);
     }
 
-    // Get approvers (TO) and notifiers (CC) from waiver_config — same as waiver submitted email
-    const [approverRows] = await pool.promise().query(
-      `SELECT config_value FROM waiver_config WHERE config_key = 'approvers' LIMIT 1`
-    );
-    let approverEmails = [];
-    try { approverEmails = JSON.parse(approverRows[0]?.config_value || '[]').filter(Boolean); } catch {}
-
     const notifierEmails = await getNotifierEmails();
-    const allCc = [...new Set([...ccList, ...notifierEmails])];
+    const toSet = new Set(approvers.map(e => e.toLowerCase()));
+    const allCc = [...new Set([...ccList, ...notifierEmails].filter(e => !toSet.has(e.toLowerCase())))];
 
     const subject = `Waiver Updated – # ${waiverId} for ${waiver.part_number || ''} ${waiver.description || ''}`.trim();
 
     await createTransporter().sendMail({
       from: `"AMD PDQD System" <noreply@amd.com>`,
-      to: approverEmails.join(','),
+      to: approvers.join(','),
       cc: allCc.join(','),
       subject,
       html: `

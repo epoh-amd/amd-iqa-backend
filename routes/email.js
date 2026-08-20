@@ -1764,6 +1764,92 @@ router.post('/waiver/status-notify', async (req, res) => {
   }
 });
 
+router.post('/waiver/workorder-notify', async (req, res) => {
+  const { waiverId, prevWorkorder, prevWorkorderQty, newWorkorder, newWorkorderQty, updatedBy } = req.body;
+  if (!waiverId) return res.status(400).json({ error: 'Missing waiverId' });
+
+  try {
+    const pool = getGlobalPool();
+
+    const [rows] = await pool.promise().query(
+      `SELECT waiver_id, part_number, description, requestor, submitted_by FROM waivers WHERE waiver_id = ?`,
+      [waiverId]
+    );
+    const waiver = rows[0];
+    if (!waiver) return res.json({ success: false, message: 'Waiver not found' });
+
+    // Resolve requestor names to emails for CC
+    let requestorNames = [];
+    try {
+      const parsed = JSON.parse(waiver.requestor);
+      requestorNames = Array.isArray(parsed) ? parsed.filter(Boolean) : [waiver.requestor];
+    } catch { requestorNames = waiver.requestor ? [waiver.requestor] : []; }
+
+    const allNames = [...new Set([waiver.submitted_by, ...requestorNames].filter(Boolean))];
+    let ccList = [];
+    if (allNames.length > 0) {
+      const placeholders = allNames.map(() => '?').join(',');
+      const [userRows] = await pool.promise().query(
+        `SELECT email FROM users WHERE full_name IN (${placeholders}) AND email IS NOT NULL AND email != ''`,
+        allNames
+      );
+      ccList = userRows.map(r => r.email).filter(Boolean);
+    }
+
+    // Get approvers (TO) and notifiers (CC) from waiver_config — same as waiver submitted email
+    const [approverRows] = await pool.promise().query(
+      `SELECT config_value FROM waiver_config WHERE config_key = 'approvers' LIMIT 1`
+    );
+    let approverEmails = [];
+    try { approverEmails = JSON.parse(approverRows[0]?.config_value || '[]').filter(Boolean); } catch {}
+
+    const notifierEmails = await getNotifierEmails();
+    const allCc = [...new Set([...ccList, ...notifierEmails])];
+
+    const subject = `Waiver Updated – # ${waiverId} for ${waiver.part_number || ''} ${waiver.description || ''}`.trim();
+
+    await createTransporter().sendMail({
+      from: `"AMD PDQD System" <noreply@amd.com>`,
+      to: approverEmails.join(','),
+      cc: allCc.join(','),
+      subject,
+      html: `
+        <div style="font-family: Arial, sans-serif; padding: 24px; max-width: 640px; color: #222; line-height: 1.6;">
+          <p>Dear All,</p>
+          <p>Waiver <strong>${waiverId}</strong> has been updated with new workorder information:</p>
+          <table style="border-collapse: collapse; margin: 12px 0 20px 0; min-width: 320px;">
+            <thead>
+              <tr style="background: #f0f0f0;">
+                <th style="border: 1px solid #ccc; padding: 8px 16px; text-align: left;"></th>
+                <th style="border: 1px solid #ccc; padding: 8px 16px; text-align: left;">Previous</th>
+                <th style="border: 1px solid #ccc; padding: 8px 16px; text-align: left;">Current</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style="border: 1px solid #ccc; padding: 8px 16px; font-weight: 600;">WO:</td>
+                <td style="border: 1px solid #ccc; padding: 8px 16px;">${prevWorkorder || '-'}</td>
+                <td style="border: 1px solid #ccc; padding: 8px 16px;">${newWorkorder || '-'}</td>
+              </tr>
+              <tr>
+                <td style="border: 1px solid #ccc; padding: 8px 16px; font-weight: 600;">Qty:</td>
+                <td style="border: 1px solid #ccc; padding: 8px 16px;">${prevWorkorderQty || '-'}</td>
+                <td style="border: 1px solid #ccc; padding: 8px 16px;">${newWorkorderQty || '-'}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p style="margin-top: 24px; font-size: 12px; color: #888;">This is an automated notification from the AMD PDQD System. Please do not reply to this email.</p>
+        </div>
+      `,
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Workorder notification email failed:', err);
+    res.status(500).json({ error: 'Email failed' });
+  }
+});
+
 router.post('/build-fail-notify', async (req, res) => {
   const path = require('path');
   const fs = require('fs');

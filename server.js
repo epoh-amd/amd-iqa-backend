@@ -280,6 +280,8 @@ const dbConfig = {
   dateStrings: true,  // Return all date/datetime columns as plain strings, no Date objects created
   multipleStatements: false,        // Security
   reconnect: true,                  // Auto-reconnect
+  // Removes ONLY_FULL_GROUP_BY so GROUP BY chassis_sn queries with many selected columns work
+  sql_mode: 'STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION',
 
   // Connection optimization
   ssl: process.env.DB_SSL === 'true' ? {
@@ -2512,7 +2514,6 @@ SELECT
     b.lom_working_status,
     b.lom_working_notes,
     b.fpy_status,
-    b.final_status,
     b.can_continue,
     b.status,
     b.created_at,
@@ -2861,7 +2862,6 @@ app.get('/api/builds/:chassisSN/complete', (req, res) => {
     b.lom_working_status,
     b.lom_working_notes,
     b.fpy_status,
-    b.final_status,
     b.can_continue,
     b.status,
     b.created_at,
@@ -3011,7 +3011,6 @@ app.get('/api/builds/:chassisSN/complete/export', (req, res) => {
 
 
     b.fpy_status,
-    b.final_status,
     b.can_continue,
     b.status,
     b.created_at,
@@ -3389,7 +3388,6 @@ app.post('/api/builds/search-for-edit', (req, res) => {
     b.lom_working_status,
     b.lom_working_notes,
     b.fpy_status,
-    b.final_status,
     b.can_continue,
     b.status,
     b.created_at,
@@ -3505,7 +3503,6 @@ app.post('/api/builds/search-for-edit-rma', (req, res) => {
     b.lom_working_status,
     b.lom_working_notes,
     b.fpy_status,
-    b.final_status,
     b.can_continue,
     b.status,
     b.created_at,
@@ -3721,9 +3718,9 @@ app.put('/api/builds/:chassisSN/edit', async (req, res) => {
       buildUpdateValues.push(updateData.hpmFpgaVersion);
     }
 
-    // Quality Details (editable) — writes to final_status; fpy_status is initial save only
+    // Quality Details (editable)
     if (updateData.fpyStatus !== undefined) {
-      buildUpdateFields.push('final_status = ?');
+      buildUpdateFields.push('fpy_status = ?');
       buildUpdateValues.push(updateData.fpyStatus);
     }
     if (updateData.problemDescription !== undefined) {
@@ -4429,9 +4426,9 @@ app.post('/api/builds', async (req, res) => {
         cpu_p0_sn, cpu_p0_socket_date_code, cpu_p1_sn, cpu_p1_socket_date_code, m2_pn, m2_sn, dimm_pn, dimm_qty, 
         visual_inspection_status, visual_inspection_notes, boot_status, boot_notes, 
         dimms_detected_status, dimms_detected_notes, lom_working_status, lom_working_notes, 
-        fpy_status, final_status, problem_description, can_continue, status, bios_version,
+        fpy_status, problem_description, can_continue, status, bios_version,
         scm_fpga_version, hpm_fpga_version, bmc_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         location = VALUES(location),
         build_engineer = VALUES(build_engineer),
@@ -4467,7 +4464,6 @@ app.post('/api/builds', async (req, res) => {
         lom_working_status = VALUES(lom_working_status),
         lom_working_notes = VALUES(lom_working_notes),
         fpy_status = VALUES(fpy_status),
-        final_status = VALUES(final_status),
         problem_description = VALUES(problem_description),
         can_continue = VALUES(can_continue),
         status = VALUES(status),
@@ -4515,8 +4511,7 @@ app.post('/api/builds', async (req, res) => {
       systemInfo.lomWorkingStatus,                   // 30. lom_working_status
       systemInfo.lomWorkingNotes || null,            // 31. lom_working_notes
       fpyStatus,                                      // 32. fpy_status
-      fpyStatus,                                      // 33. final_status (same as fpy_status on initial save)
-      qualityDetails?.problemDescription || null,    // 34. problem_description
+      qualityDetails?.problemDescription || null,    // 33. problem_description
       canContinue,                                    // 34. can_continue
       finalBuildStatus,                               // 35. status
       // FIXED: Added missing BKC details (4 more values)
@@ -5935,7 +5930,7 @@ app.patch('/api/builds/:chassisSN/quality', async (req, res) => {
     // Update build with quality data and status including problem_description
     const updateQuery = `
       UPDATE builds
-      SET final_status = ?, problem_description = ?, can_continue = ?, status = ?
+      SET fpy_status = ?, problem_description = ?, can_continue = ?, status = ?
       WHERE chassis_sn = ?
     `;
 
@@ -6203,7 +6198,7 @@ app.patch('/api/builds/:chassisSN/rework', async (req, res) => {
         dimms_detected_notes = ?,
         lom_working_status = ?,
         lom_working_notes = ?,
-        final_status = ?,
+        fpy_status = ?,
         problem_description = ?,
         status = CASE
           WHEN ? = 'Pass' THEN 'Complete'

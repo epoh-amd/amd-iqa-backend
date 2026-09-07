@@ -363,8 +363,8 @@ app.use('/api/profile', profileRoutes);
 const offlineUploadRoutes = require('./routes/offlineUpload');
 app.use('/api/offline', offlineUploadRoutes);
 
-const gpuBuildsRoutes = require('./routes/gpuBuilds');
-app.use('/api', gpuBuildsRoutes);
+//const gpuBuildsRoutes = require('./routes/gpuBuilds');
+//app.use('/api', gpuBuildsRoutes);
 
 // ============================================================================
 // SYSTEM HEALTH ENDPOINT

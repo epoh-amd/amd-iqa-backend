@@ -280,8 +280,6 @@ const dbConfig = {
   dateStrings: true,  // Return all date/datetime columns as plain strings, no Date objects created
   multipleStatements: false,        // Security
   reconnect: true,                  // Auto-reconnect
-  // Removes ONLY_FULL_GROUP_BY so GROUP BY chassis_sn queries with many selected columns work
-  sql_mode: 'STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION',
 
   // Connection optimization
   ssl: process.env.DB_SSL === 'true' ? {
@@ -364,6 +362,9 @@ app.use('/api/profile', profileRoutes);
 
 const offlineUploadRoutes = require('./routes/offlineUpload');
 app.use('/api/offline', offlineUploadRoutes);
+
+const gpuBuildsRoutes = require('./routes/gpuBuilds');
+app.use('/api', gpuBuildsRoutes);
 
 // ============================================================================
 // SYSTEM HEALTH ENDPOINT
@@ -3920,6 +3921,56 @@ app.get('/api/platform', (req, res) => {
  * @param {string} platformPrefix - Platform prefix from system PN
  * @returns {object} - { manufacturer: string }
  */
+// GET /api/manufacturers — list all manufacturers
+app.get('/api/manufacturers', async (req, res) => {
+  try {
+    const [rows] = await db.promise().query('SELECT platform_prefix, manufacturer_name FROM manufacturers ORDER BY manufacturer_name');
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/manufacturers — add new manufacturer
+app.post('/api/manufacturers', async (req, res) => {
+  const { platformPrefix, manufacturerName } = req.body;
+  if (!platformPrefix?.trim() || !manufacturerName?.trim())
+    return res.status(400).json({ error: 'platform_prefix and manufacturer_name are required' });
+  try {
+    await db.promise().query(
+      'INSERT INTO manufacturers (platform_prefix, manufacturer_name) VALUES (?, ?)',
+      [platformPrefix.trim(), manufacturerName.trim()]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'That platform prefix already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/manufacturers/:originalPrefix — update manufacturer (prefix is the PK)
+app.patch('/api/manufacturers/:originalPrefix', async (req, res) => {
+  const { originalPrefix } = req.params;
+  const { platformPrefix, manufacturerName } = req.body;
+  try {
+    await db.promise().query(
+      'UPDATE manufacturers SET platform_prefix = ?, manufacturer_name = ? WHERE platform_prefix = ?',
+      [platformPrefix, manufacturerName, originalPrefix]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'That platform prefix already exists' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/manufacturers/:prefix — delete manufacturer
+app.delete('/api/manufacturers/:prefix', async (req, res) => {
+  const { prefix } = req.params;
+  try {
+    await db.promise().query('DELETE FROM manufacturers WHERE platform_prefix = ?', [prefix]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/manufacturer/:platformPrefix', (req, res) => {
   const { platformPrefix } = req.params;
 
@@ -4982,13 +5033,14 @@ const toDateOnly = (val) => val ? val.toString().slice(0, 10) : null;
           `INSERT INTO waiver_material_rows
              (waiver_id, sort_order, current_part, current_part_description,
               no_of_per, refdes,
-              new_part, new_part_description, action, instructions, file_path)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              new_part, new_part_description, new_qty, new_refdes, action, instructions, file_path)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             waiverId, i,
             r.currentPart || null, r.currentPartDescription || null,
             r.noOfPer || null, r.refdes || null,
             r.newPart || null, r.newPartDescription || null,
+            r.newQty || null, r.newRefdes || null,
             r.action || null, r.instructions || null,
             filePaths.length ? JSON.stringify(filePaths) : null
           ]
@@ -5132,13 +5184,14 @@ app.post('/api/waivers/submit', async (req, res) => {
           `INSERT INTO waiver_material_rows
              (waiver_id, sort_order, current_part, current_part_description,
               no_of_per, refdes,
-              new_part, new_part_description, action, instructions, file_path)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              new_part, new_part_description, new_qty, new_refdes, action, instructions, file_path)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             waiverId, i,
             r.currentPart || null, r.currentPartDescription || null,
             r.noOfPer || null, r.refdes || null,
             r.newPart || null, r.newPartDescription || null,
+            r.newQty || null, r.newRefdes || null,
             r.action || null, r.instructions || null,
             filePaths.length ? JSON.stringify(filePaths) : null
           ]
@@ -5875,6 +5928,96 @@ app.get('/api/failure-modes', (req, res) => {
 
     res.json(grouped);
   });
+});
+
+// GET /api/failure-modes/list — flat list with id for admin management
+app.get('/api/failure-modes/list', async (req, res) => {
+  try {
+    const [rows] = await db.promise().query(
+      'SELECT id, failure_mode, failure_category FROM failure_mode_category_map ORDER BY failure_category, failure_mode'
+    );
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/failure-categories — distinct categories
+app.get('/api/failure-categories', async (req, res) => {
+  try {
+    const [rows] = await db.promise().query(
+      'SELECT DISTINCT failure_category FROM failure_mode_category_map ORDER BY failure_category'
+    );
+    res.json(rows.map(r => r.failure_category));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/failure-modes — add new failure mode (optionally assign to category)
+app.post('/api/failure-modes', async (req, res) => {
+  const { failureMode, failureCategory } = req.body;
+  if (!failureMode?.trim()) return res.status(400).json({ error: 'failure_mode is required' });
+  try {
+    await db.promise().query(
+      'INSERT INTO failure_mode_category_map (failure_mode, failure_category) VALUES (?, ?)',
+      [failureMode.trim(), failureCategory?.trim() || null]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'This failure mode already exists in that category' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/failure-categories — add new category
+app.post('/api/failure-categories', async (req, res) => {
+  const { failureCategory } = req.body;
+  if (!failureCategory?.trim()) return res.status(400).json({ error: 'failure_category is required' });
+  try {
+    // Insert a placeholder row so the category exists
+    await db.promise().query(
+      'INSERT INTO failure_mode_category_map (failure_mode, failure_category) VALUES (?, ?)',
+      ['', failureCategory.trim()]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// PATCH /api/failure-modes/:id/assign — assign a failure mode to a category
+app.patch('/api/failure-modes/:id/assign', async (req, res) => {
+  const { id } = req.params;
+  const { failureCategory } = req.body;
+  try {
+    await db.promise().query(
+      'UPDATE failure_mode_category_map SET failure_category = ? WHERE id = ?',
+      [failureCategory || null, id]
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DELETE /api/failure-categories/:category — remove category and unassign its modes
+app.delete('/api/failure-categories/:category', async (req, res) => {
+  const { category } = req.params;
+  try {
+    // Unassign all modes in this category
+    await db.promise().query(
+      'UPDATE failure_mode_category_map SET failure_category = NULL WHERE failure_category = ? AND failure_mode != ?',
+      [category, '']
+    );
+    // Delete placeholder/empty rows for this category
+    await db.promise().query(
+      'DELETE FROM failure_mode_category_map WHERE failure_category = ? AND (failure_mode IS NULL OR failure_mode = ?)',
+      [category, '']
+    );
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DELETE /api/failure-modes/:id
+app.delete('/api/failure-modes/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await db.promise().query('DELETE FROM failure_mode_category_map WHERE id = ?', [id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 /**

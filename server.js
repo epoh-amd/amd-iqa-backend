@@ -6609,6 +6609,7 @@ SELECT
   b.hpm_fpga_version,
   b.problem_description,
   b.bmc_mac,
+  b.po,
 
   -- Joined / aggregated columns
   GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') AS dimm_sns,

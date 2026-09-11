@@ -130,7 +130,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
     roccRushTest, roccRushTestNotes,
     hbmTest, hbmTestNotes,
     transferBench, transferBenchNotes,
-    ifwiVersion, rmVersion, status
+    ifwiVersion, rmVersion, status, buildEngineer
   } = req.body;
 
   try {

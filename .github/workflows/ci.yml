@@ -1,4 +1,4 @@
-```yaml
+
 name: Backend CI/CD
 
 on:
@@ -22,4 +22,4 @@ jobs:
             cd /opt/amd-iqa/backend
             git pull origin main
             /usr/bin/sudo systemctl restart amd-iqa-backend
-```
+

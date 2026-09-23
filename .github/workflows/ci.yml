@@ -1,29 +1,25 @@
-name: Backend CI
+```yaml
+name: Backend CI/CD
 
 on:
   push:
     branches:
       - main
 
-  pull_request:
-    branches:
-      - main
-
 jobs:
-  test:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      # 1. Connect to AMD server and deploy
+      - name: Deploy to atlviqaapd01
+        uses: appleboy/ssh-action@v1.2.0
         with:
-          node-version: 20
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
+          host: atlviqaapd01
+          username: epoh
+          password: Peq2111###
+          script: |
+            cd /opt/amd-iqa/backend
+            git pull origin main
+            /usr/bin/sudo systemctl restart amd-iqa-backend
+```

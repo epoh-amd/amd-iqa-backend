@@ -152,8 +152,9 @@ router.post('/gpu-builds', async (req, res) => {
 });
 
 // PATCH /api/gpu-builds/:originalGpuSN — update GPU build fields
-// testingOnly=true  → update only testing columns + final_status (fpy_status untouched)
-// (default)         → update only non-testing columns (testing columns + statuses untouched)
+// testingOnly=true   → update only testing columns + final_status (fpy_status untouched)
+// updateStatuses=true→ update all columns including testing + fpy_status + final_status (like POST)
+// (default)          → update only non-testing columns (testing columns + statuses untouched)
 router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
   const { originalGpuSN } = req.params;
   const {
@@ -170,7 +171,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
     roccRushTest, roccRushTestNotes,
     hbmTest, hbmTestNotes,
     transferBench, transferBenchNotes,
-    ifwiVersion, rmVersion, status, buildEngineer, testingOnly
+    ifwiVersion, rmVersion, status, buildEngineer, testingOnly, updateStatuses
   } = req.body;
 
   try {
@@ -208,6 +209,58 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
       );
       if (result.affectedRows === 0) return res.status(404).json({ error: 'GPU build not found' });
       return res.json({ success: true, gpuSN: originalGpuSN });
+    }
+
+    // ── Full save (Continue Build): all fields + fpy_status + final_status ──────
+    if (updateStatuses) {
+      const fpyStatus = computeGpuFpy({ visualInspection, bootToOS, gpuDetected, fAuditEnablement, agfhcLvl3, roccRushTest, hbmTest, transferBench });
+      const finalStatus = fpyStatus;
+      const effectiveSN = gpuSN || originalGpuSN;
+      const buildRef = projectName ? `${projectName} - ${effectiveSN.slice(-4)}` : null;
+      const resolvedSt = status !== undefined ? status
+        : await (async () => { const [r] = await pool.promise().query('SELECT status FROM gpu_builds WHERE gpu_sn = ?', [originalGpuSN]); return r[0]?.status || 'In Progress'; })();
+      const [result] = await pool.promise().query(
+        `UPDATE gpu_builds SET
+          gpu_sn = ?, build_reference = ?,
+          project_name = ?, po = ?, gpu_pn = ?, board_sn = ?, board_manufacturer = ?, asic_pn = ?,
+          silicon_rev = ?, board_rev = ?, gpu_rev = ?,
+          cpu_power_rating = ?, heatsink_manufacturer = ?,
+          heatsink_pn = ?, heatsink_sn = ?,
+          visual_inspection = ?, visual_inspection_notes = ?,
+          boot_to_os = ?, boot_to_os_notes = ?,
+          gpu_detected = ?, gpu_detected_notes = ?,
+          f_audit_enablement = ?, f_audit_enablement_notes = ?, f_audit_value = ?,
+          agfhc_lvl3 = ?, agfhc_lvl3_notes = ?,
+          rocc_rush_test = ?, rocc_rush_test_notes = ?,
+          hbm_test = ?, hbm_test_notes = ?,
+          transfer_bench = ?, transfer_bench_notes = ?,
+          ifwi_version = ?, rm_version = ?,
+          fpy_status = ?, final_status = ?,
+          status = ?, build_engineer = ?,
+          updated_at = CURRENT_TIMESTAMP
+         WHERE gpu_sn = ?`,
+        [
+          effectiveSN, buildRef,
+          projectName || null, po || null, gpuPN || null, boardSN || null, boardManufacturer || null, asicPN || null,
+          siliconRev || null, boardRev || null, gpuRev || null,
+          cpuPowerRating || null, heatsinkManufacturer || null,
+          heatsinkPN || null, heatsinkSN || null,
+          visualInspection || null, visualInspectionNotes || null,
+          bootToOS || null, bootToOSNotes || null,
+          gpuDetected || null, gpuDetectedNotes || null,
+          fAuditEnablement || null, fAuditEnablementNotes || null, fAuditValue || null,
+          agfhcLvl3 || null, agfhcLvl3Notes || null,
+          roccRushTest || null, roccRushTestNotes || null,
+          hbmTest || null, hbmTestNotes || null,
+          transferBench || null, transferBenchNotes || null,
+          ifwiVersion || null, rmVersion || null,
+          fpyStatus, finalStatus,
+          resolvedSt, buildEngineer || null,
+          originalGpuSN
+        ]
+      );
+      if (result.affectedRows === 0) return res.status(404).json({ error: 'GPU build not found' });
+      return res.json({ success: true, gpuSN: effectiveSN });
     }
 
     // ── Normal update: non-testing fields only (testing columns + statuses untouched) ──

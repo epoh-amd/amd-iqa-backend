@@ -43,7 +43,7 @@ router.post('/gpu-builds', async (req, res) => {
     roccRushTest, roccRushTestNotes,
     hbmTest, hbmTestNotes,
     transferBench, transferBenchNotes,
-    ifwiVersion, rmVersion,
+    ifwiVersion, ifwiBuild, rmVersion,
     status, buildEngineer
   } = req.body;
 
@@ -78,8 +78,8 @@ router.post('/gpu-builds', async (req, res) => {
         rocc_rush_test, rocc_rush_test_notes,
         hbm_test, hbm_test_notes,
         transfer_bench, transfer_bench_notes,
-        ifwi_version, rm_version, fpy_status, final_status, status, build_engineer
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ifwi_version, ifwi_build, rm_version, fpy_status, final_status, status, build_engineer
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         cpu_sn               = VALUES(cpu_sn),
         build_reference      = VALUES(build_reference),
@@ -114,6 +114,7 @@ router.post('/gpu-builds', async (req, res) => {
         transfer_bench          = VALUES(transfer_bench),
         transfer_bench_notes    = VALUES(transfer_bench_notes),
         ifwi_version         = VALUES(ifwi_version),
+        ifwi_build           = VALUES(ifwi_build),
         rm_version           = VALUES(rm_version),
         fpy_status           = VALUES(fpy_status),
         final_status         = VALUES(final_status),
@@ -135,7 +136,7 @@ router.post('/gpu-builds', async (req, res) => {
         roccRushTest || null, roccRushTestNotes || null,
         hbmTest || null, hbmTestNotes || null,
         transferBench || null, transferBenchNotes || null,
-        ifwiVersion || null, rmVersion || null,
+        ifwiVersion || null, ifwiBuild || null, rmVersion || null,
         fpyStatus, finalStatus,
         status || 'In Progress', buildEngineer || null
       ]
@@ -171,7 +172,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
     roccRushTest, roccRushTestNotes,
     hbmTest, hbmTestNotes,
     transferBench, transferBenchNotes,
-    ifwiVersion, rmVersion, status, buildEngineer, testingOnly, updateStatuses
+    ifwiVersion, ifwiBuild, rmVersion, status, buildEngineer, testingOnly, updateStatuses
   } = req.body;
 
   try {
@@ -234,7 +235,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
           rocc_rush_test = ?, rocc_rush_test_notes = ?,
           hbm_test = ?, hbm_test_notes = ?,
           transfer_bench = ?, transfer_bench_notes = ?,
-          ifwi_version = ?, rm_version = ?,
+          ifwi_version = ?, ifwi_build = ?, rm_version = ?,
           fpy_status = ?, final_status = ?,
           status = ?, build_engineer = ?,
           updated_at = CURRENT_TIMESTAMP
@@ -253,7 +254,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
           roccRushTest || null, roccRushTestNotes || null,
           hbmTest || null, hbmTestNotes || null,
           transferBench || null, transferBenchNotes || null,
-          ifwiVersion || null, rmVersion || null,
+          ifwiVersion || null, ifwiBuild || null, rmVersion || null,
           fpyStatus, finalStatus,
           resolvedSt, buildEngineer || null,
           originalGpuSN
@@ -281,7 +282,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
         silicon_rev = ?, board_rev = ?, gpu_rev = ?,
         cpu_power_rating = ?, heatsink_manufacturer = ?,
         heatsink_pn = ?, heatsink_sn = ?,
-        ifwi_version = ?, rm_version = ?,
+        ifwi_version = ?, ifwi_build = ?, rm_version = ?,
         status = ?, build_engineer = ?,
         updated_at = CURRENT_TIMESTAMP
        WHERE gpu_sn = ?`,
@@ -292,7 +293,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
         siliconRev || null, boardRev || null, gpuRev || null,
         cpuPowerRating || null, heatsinkManufacturer || null,
         heatsinkPN || null, heatsinkSN || null,
-        ifwiVersion || null, rmVersion || null,
+        ifwiVersion || null, ifwiBuild || null, rmVersion || null,
         resolvedStatus,
         buildEngineer || null,
         originalGpuSN

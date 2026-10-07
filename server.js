@@ -5948,10 +5948,10 @@ app.post('/api/extract-firmware-versions', async (req, res) => {
  */
 app.patch('/api/builds/:chassisSN/bkc', (req, res) => {
   const { chassisSN } = req.params;
-  const { biosVersion, scmFpgaVersion, hpmFpgaVersion, bmcVersion } = req.body;
+  const { biosVersion, scmFpgaVersion, hpmFpgaVersion, bmcVersion, cpuPinPhoto } = req.body;
 
   const query = `
-    UPDATE builds 
+    UPDATE builds
     SET bios_version = ?, scm_fpga_version = ?, hpm_fpga_version = ?, bmc_version = ?
     WHERE chassis_sn = ?
   `;
@@ -5964,6 +5964,18 @@ app.patch('/api/builds/:chassisSN/bkc', (req, res) => {
 
     if (results.affectedRows === 0) {
       return res.status(404).json({ error: 'Build not found' });
+    }
+
+    // Save CPU pin photo to master_builds if provided
+    if (cpuPinPhoto) {
+      const mbQuery = `
+        INSERT INTO master_builds (chassis_sn, cpu_pin_photo, cpu_pin_photo_uploaded_at)
+        VALUES (?, ?, NOW())
+        ON DUPLICATE KEY UPDATE cpu_pin_photo = VALUES(cpu_pin_photo), cpu_pin_photo_uploaded_at = NOW()
+      `;
+      db.query(mbQuery, [chassisSN, cpuPinPhoto], (mbErr) => {
+        if (mbErr) console.error('Error saving CPU pin photo:', mbErr);
+      });
     }
 
     res.json({ success: true, message: 'BKC details saved successfully' });

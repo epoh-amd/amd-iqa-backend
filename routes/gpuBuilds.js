@@ -423,4 +423,47 @@ router.get('/gpu-builds/:gpuSN/photos', async (req, res) => {
   }
 });
 
+// POST /api/gpu-builds/extract-firmware — SSH into hostname, read current_summary.txt, return parsed firmware values
+router.post('/gpu-builds/extract-firmware', async (req, res) => {
+  const { hostname } = req.body;
+  if (!hostname) return res.status(400).json({ error: 'hostname is required' });
+
+  const SftpClient = require('ssh2-sftp-client');
+  const sftp = new SftpClient();
+  try {
+    await sftp.connect({
+      host: hostname,
+      username: process.env.SSH_USER || 'root',
+      password: process.env.SSH_PASS,
+      readyTimeout: 10000,
+      hostVerifier: () => true,
+    });
+
+    const content = await sftp.get('/root/MI-PDQ/current_summary.txt');
+    await sftp.end();
+
+    const text = content.toString();
+    const parse = (key) => {
+      const m = text.match(new RegExp(`^${key}=(.+)$`, 'm'));
+      return m ? m[1].trim() : null;
+    };
+
+    res.json({
+      ifwiVersion:  parse('IFWI_Version'),
+      ifwiBuild:    parse('IFWI_Build_Version'),
+      rmVersion:    parse('RM_Version'),
+    });
+  } catch (err) {
+    console.error('=== GPU Firmware Extract FAILED ===');
+    console.error('  Hostname :', hostname);
+    console.error('  Message  :', err.message);
+    console.error('  Code     :', err.code);
+    console.error('  Level    :', err.level);
+    console.error('  Stack    :', err.stack);
+    console.error('===================================');
+    res.status(500).json({ error: 'Failed to extract firmware', message: err.message });
+  }
+});
+
+
 module.exports = router;

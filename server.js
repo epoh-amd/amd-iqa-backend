@@ -442,8 +442,8 @@ const storage = multer.diskStorage({
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+    const shortId = Math.random().toString(36).slice(2, 8).toUpperCase();
+    cb(null, shortId + path.extname(file.originalname));
   }
 });
 
@@ -500,16 +500,7 @@ app.use('/uploads', (req, res, next) => {
 
   const filePath = path.join(__dirname, 'uploads', req.path);
 
-  //console.log('__dirname =', __dirname);
-
-  console.log('Static file request:', {
-    requestPath: req.path,
-    fullPath: filePath,
-    exists: fs.existsSync(filePath)
-  });
-
   if (!fs.existsSync(filePath)) {
-    console.log('Static file not found:', filePath);
     return res.status(404).json({ error: 'File not found' });
   }
 
@@ -1005,7 +996,77 @@ app.post('/api/extract-log', async (req, res) => {
   }
 });
 
+// POST /api/match-bmc-mac — SSH into BMC as root, run `ip a`, return eth0 MAC
+app.post('/api/match-bmc-mac', async (req, res) => {
+  const { bmcName } = req.body;
+  if (!bmcName) return res.status(400).json({ error: 'bmcName is required' });
 
+  const { Client } = require('ssh2');
+  const conn = new Client();
+  try {
+    const mac = await new Promise((resolve, reject) => {
+      conn.on('ready', () => {
+        conn.exec('ip a', (err, stream) => {
+          if (err) { conn.end(); return reject(err); }
+          let output = '';
+          stream.on('data', chunk => { output += chunk.toString(); });
+          stream.stderr.on('data', () => {});
+          stream.on('close', () => {
+            conn.end();
+            const m = output.match(/eth0[\s\S]*?link\/ether\s+([0-9a-f:]{17})/i);
+            if (m) resolve(m[1]);
+            else reject(new Error('eth0 MAC not found in ip a output'));
+          });
+        });
+      });
+      conn.on('error', reject);
+      conn.connect({ host: bmcName, username: 'root', password: '0penBmc', readyTimeout: 10000, hostVerifier: () => true });
+    });
+    res.json({ bmcMac: mac });
+  } catch (err) {
+    console.error('=== BMC MAC Match FAILED ===');
+    console.error('  BMC Name :', bmcName);
+    console.error('  Message  :', err.message);
+    console.error('============================');
+    res.status(500).json({ error: 'Failed to retrieve BMC MAC', message: err.message });
+  }
+});
+
+// POST /api/match-ethernet-mac — SSH into OS as amd@{ip}, run `ip a`, return eth0 MAC
+app.post('/api/match-ethernet-mac', async (req, res) => {
+  const { ipAddress } = req.body;
+  if (!ipAddress) return res.status(400).json({ error: 'ipAddress is required' });
+
+  const { Client } = require('ssh2');
+  const conn = new Client();
+  try {
+    const mac = await new Promise((resolve, reject) => {
+      conn.on('ready', () => {
+        conn.exec('ip a', (err, stream) => {
+          if (err) { conn.end(); return reject(err); }
+          let output = '';
+          stream.on('data', chunk => { output += chunk.toString(); });
+          stream.stderr.on('data', () => {});
+          stream.on('close', () => {
+            conn.end();
+            const m = output.match(/eth0[\s\S]*?link\/ether\s+([0-9a-f:]{17})/i);
+            if (m) resolve(m[1]);
+            else reject(new Error('eth0 MAC not found in ip a output'));
+          });
+        });
+      });
+      conn.on('error', reject);
+      conn.connect({ host: ipAddress, username: 'amd', password: 'amd123', readyTimeout: 10000, hostVerifier: () => true });
+    });
+    res.json({ ethernetMac: mac });
+  } catch (err) {
+    console.error('=== Ethernet MAC Match FAILED ===');
+    console.error('  IP       :', ipAddress);
+    console.error('  Message  :', err.message);
+    console.error('=================================');
+    res.status(500).json({ error: 'Failed to retrieve Ethernet MAC', message: err.message });
+  }
+});
 
 //http://localhost:5000/api/dashboard/build-data/Weisshorn%20SP7
 /**
@@ -1022,7 +1083,7 @@ app.post('/api/extract-log', async (req, res) => {
 app.get('/api/dashboard/build-data/:projectName', (req, res) => {
   const { projectName } = req.params;
 
-  console.log(`Fetching build data for project: ${projectName}`);
+
 
   //projectName = 'Weisshorn SP7';
 
@@ -1063,7 +1124,7 @@ app.get('/api/dashboard/build-data/:projectName', (req, res) => {
       return res.status(500).json({ error: 'Database error', details: err.message });
     }
 
-    console.log(`Found ${results.length} builds with PRB/VRB in platform_type for project: ${projectName}`);
+
 
     // Debug: Log some sample platform_type values
     if (results.length > 0) {
@@ -1078,7 +1139,7 @@ app.get('/api/dashboard/build-data/:projectName', (req, res) => {
       return build.master_status === 'Delivered';
     });
 
-    console.log(`Filtered to ${relevantBuilds.length} relevant builds after master status filter`);
+
 
     // Group by detected platform and create weekly data structure
     const weeklyData = { PRB: {}, VRB: {} };
@@ -1177,7 +1238,7 @@ app.get('/api/dashboard/build-data/:projectName', (req, res) => {
   const db = req.app.get('db');
   const { projectName } = req.params;
 
-  console.log(`Fetching build data for project: ${projectName}`);
+
 
   // Step 1: get project id
   const getProjectIdQuery = `
@@ -1199,7 +1260,7 @@ app.get('/api/dashboard/build-data/:projectName', (req, res) => {
 
     const projectId = projectRows[0].id;
 
-    console.log(`Project ID: ${projectId}`);
+
 
     // Step 2: main query
     const query = `
@@ -1238,7 +1299,7 @@ app.get('/api/dashboard/build-data/:projectName', (req, res) => {
         return res.status(500).json({ error: 'Database error', details: err.message });
       }
 
-      console.log(`Found ${results.length} builds with PRB/VRB for project: ${projectName}`);
+
 
       if (results.length > 0) {
         console.log('Sample platform_type values:');
@@ -1250,7 +1311,7 @@ app.get('/api/dashboard/build-data/:projectName', (req, res) => {
       // Only include Delivered builds
       const relevantBuilds = results.filter(build => build.master_status === 'Delivered');
 
-      console.log(`Filtered to ${relevantBuilds.length} relevant builds`);
+
 
       const weeklyData = { PRB: {}, VRB: {} };
 
@@ -1640,7 +1701,7 @@ app.get('/api/dashboard/forecast-config/:projectName/:platformType', (req, res) 
     }
 
     if (configResults.length === 0) {
-      console.log('No configuration found');
+
       return res.json(null); // No configuration found
     }
 
@@ -6638,6 +6699,8 @@ SELECT
   mb.capitalization,
   DATE_FORMAT(mb.delivery_date, '%Y-%m-%d') AS delivery_date,
   mb.master_status,
+  mb.cpu_pin_photo,
+  mb.cpu_pin_photo_uploaded_at,
   mb.created_at AS master_created_at,
   mb.updated_at AS master_updated_at,
 
@@ -6661,6 +6724,7 @@ SELECT
       'capitalization', mb.capitalization,
       'delivery_date', DATE_FORMAT(mb.delivery_date, '%Y-%m-%d'),
       'master_status', mb.master_status,
+      'cpu_pin_photo', mb.cpu_pin_photo,
       'build_engineer', b.build_engineer,
       'jira_ticket_no', b.jira_ticket_no
     )
@@ -6693,11 +6757,10 @@ ORDER BY b.created_at DESC;
 
       // Debug logging for delivery_date
       if (row.delivery_date) {
-        console.log(`Build ${row.chassis_sn} delivery_date:`, row.delivery_date);
+
       }
     });
 
-    console.log('Returning builds data, count:', results.length);
     res.json(results);
   });
 });
@@ -6716,8 +6779,6 @@ ORDER BY b.created_at DESC;
  */
 app.post('/api/master-builds/:chassisSN', (req, res) => {
   const { chassisSN } = req.params;
-  console.log('Received master build save request for:', chassisSN);
-  console.log('Request body:', req.body);
 
   const {
     location,
@@ -6733,7 +6794,8 @@ app.post('/api/master-builds/:chassisSN', (req, res) => {
     costCenter,
     capitalization,
     deliveryDate,
-    masterStatus
+    masterStatus,
+    cpuPinPhoto
   } = req.body;
 
   // First check if build exists
@@ -6748,7 +6810,6 @@ app.post('/api/master-builds/:chassisSN', (req, res) => {
       return res.status(404).json({ error: 'Build not found' });
     }
 
-    console.log('Build exists, proceeding with master data save');
 
     // Check if master record already exists
     db.query('SELECT * FROM master_builds WHERE chassis_sn = ?', [chassisSN], (err, existingResults) => {
@@ -6813,6 +6874,13 @@ app.post('/api/master-builds/:chassisSN', (req, res) => {
           updateFields.push('master_status = ?');
           updateValues.push(masterStatus);
         }
+        if (cpuPinPhoto !== undefined) {
+          updateFields.push('cpu_pin_photo = ?');
+          updateValues.push(cpuPinPhoto || null);
+          if (cpuPinPhoto) {
+            updateFields.push('cpu_pin_photo_uploaded_at = NOW()');
+          }
+        }
 
         // Always update timestamp
         updateFields.push('updated_at = CURRENT_TIMESTAMP');
@@ -6826,8 +6894,6 @@ app.post('/api/master-builds/:chassisSN', (req, res) => {
             WHERE chassis_sn = ?
           `;
 
-          console.log('Updating with query:', updateQuery);
-          console.log('Update values:', updateValues);
 
           db.query(updateQuery, updateValues, (err, results) => {
             if (err) {
@@ -6835,7 +6901,6 @@ app.post('/api/master-builds/:chassisSN', (req, res) => {
               return res.status(500).json({ error: 'Failed to update master build data: ' + err.message });
             }
 
-            console.log('Master build data updated successfully:', results);
             res.json({
               success: true,
               message: 'Master build data updated successfully',
@@ -6854,9 +6919,10 @@ app.post('/api/master-builds/:chassisSN', (req, res) => {
         const insertQuery = `
           INSERT INTO master_builds (
             chassis_sn, location, custom_location, team_security, department,
-            build_name, changegear_asset_id, notes, sms_order, cost_center, 
-            capitalization, delivery_date, master_status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            build_name, changegear_asset_id, notes, sms_order, cost_center,
+            capitalization, delivery_date, master_status, cpu_pin_photo,
+            cpu_pin_photo_uploaded_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
 
         const insertValues = [
@@ -6865,16 +6931,16 @@ app.post('/api/master-builds/:chassisSN', (req, res) => {
           customLocation || null,
           teamSecurity || null,
           department || null,
-          // buildEngineer removed
           buildName || null,
-          // jiraTicketNo removed
           changegearAssetId || null,
           notes || null,
           smsOrder || null,
           costCenter || null,
           capitalization || null,
           deliveryDate || null,
-          masterStatus || null
+          masterStatus || null,
+          cpuPinPhoto || null,
+          cpuPinPhoto ? new Date() : null
         ];
 
         console.log('Inserting new master build data');
@@ -7051,7 +7117,6 @@ app.get('/api/rma', async (req, res) => {
 app.post('/api/search-builds', (req, res) => {
   const filters = req.body;
 
-  console.log('Search request received with filters:', filters);
 
   // Build the base query with all joins INCLUDING rework history
   let query = `
@@ -7071,6 +7136,8 @@ app.post('/api/search-builds', (req, res) => {
       mb.capitalization,
       mb.delivery_date,
       mb.master_status,
+      mb.cpu_pin_photo,
+      mb.cpu_pin_photo_uploaded_at,
       -- Get problem_description from latest rework_history entry
       (
         SELECT rh_latest.problem_description
@@ -7393,13 +7460,14 @@ app.post('/api/search-builds', (req, res) => {
     params.push(filters.deliveryDateTo);
   }
 
-  // Group by and order
-  query += ' GROUP BY b.chassis_sn ORDER BY b.created_at DESC';
+  // Group by and order — count total then page to 1000
+  const countQuery = `SELECT COUNT(DISTINCT b.chassis_sn) AS total FROM builds b LEFT JOIN dimm_serial_numbers d ON b.chassis_sn = d.chassis_sn LEFT JOIN master_builds mb ON b.chassis_sn = mb.chassis_sn LEFT JOIN rework_history rh ON b.chassis_sn = rh.chassis_sn LEFT JOIN project_name pn ON b.project_name = pn.id WHERE 1=1${query.split('WHERE 1=1')[1].split('GROUP BY')[0]}`;
+  const limitClause = filters.exportAll ? '' : ' LIMIT 1000';
+  query += ` GROUP BY b.chassis_sn ORDER BY b.created_at DESC${limitClause}`;
 
-  // Add limit to prevent overwhelming results
-  //query += ' LIMIT 1000';
 
-  console.log('Executing search query with', params.length, 'parameters');
+  db.query(countQuery, params, (cerr, countResult) => {
+    const totalCount = (!cerr && countResult?.[0]) ? countResult[0].total : null;
 
   db.query(query, params, (err, results) => {
     if (err) {
@@ -7407,9 +7475,8 @@ app.post('/api/search-builds', (req, res) => {
       return res.status(500).json({ error: 'Database error during search' });
     }
 
-    console.log(`Search returned ${results.length} results`);
 
-    if (results.length === 0) return res.json(results);
+    if (results.length === 0) return res.json({ results: [], totalCount });
 
     // Fetch latest failure mode/category for each chassis separately (same as export)
     const chassisList = results.map(r => r.chassis_sn);
@@ -7454,9 +7521,10 @@ app.post('/api/search-builds', (req, res) => {
         row.failure_categories_combined = f ? f.failure_category : null;
       });
 
-      res.json(results);
+      res.json({ results, totalCount });
     });
-  });
+  }); // db.query (main)
+  }); // db.query (count)
 });
 
 // GET all unique ChangeGear Asset IDs
@@ -8804,7 +8872,6 @@ setInterval(async () => {
   try {
     const isHealthy = await testConnection(db);
     if (isHealthy) {
-      console.log('Database health check passed');
     } else {
       console.error('Database health check failed');
     }

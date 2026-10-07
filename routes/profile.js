@@ -660,7 +660,6 @@ router.get('/auth/okta', (req, res, next) => {
 router.get('/auth/okta', async (req, res, next) => {
   // Development bypass: skip Okta entirely and simulate a successful login
   if (process.env.NODE_ENV === 'development') {
-    console.log('=== DEV AUTH BYPASS: Skipping Okta ===');
     try {
       const devUser = {
         okta_user_id: '00uz286ii7At9gy12697',

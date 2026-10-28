@@ -6720,6 +6720,8 @@ SELECT
   CASE WHEN COUNT(DISTINCT rh.id) > 0 THEN 'Yes' ELSE 'No' END AS has_rework,
   COUNT(DISTINCT rh.id) AS rework_count,
 
+  (SELECT r.pass_fail FROM rma r WHERE r.chassis_sn = b.chassis_sn LIMIT 1) AS rma_status,
+
   -- Master data JSON
   CASE 
     WHEN mb.chassis_sn IS NOT NULL THEN JSON_OBJECT(
@@ -7150,6 +7152,7 @@ app.post('/api/search-builds', (req, res) => {
       mb.master_status,
       mb.cpu_pin_photo,
       mb.cpu_pin_photo_uploaded_at,
+      r.pass_fail as rma_status,
       -- Get problem_description from latest rework_history entry
       (
         SELECT rh_latest.problem_description
@@ -7169,6 +7172,7 @@ app.post('/api/search-builds', (req, res) => {
     LEFT JOIN master_builds mb ON b.chassis_sn = mb.chassis_sn
     LEFT JOIN rework_history rh ON b.chassis_sn = rh.chassis_sn
     LEFT JOIN project_name pn ON b.project_name = pn.id
+    LEFT JOIN rma r ON b.chassis_sn = r.chassis_sn
     WHERE 1=1
   `;
 

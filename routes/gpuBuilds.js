@@ -30,7 +30,7 @@ const withFpyColumns = async (pool) => {
 // POST /api/gpu-builds — insert or update a GPU build record
 router.post('/gpu-builds', async (req, res) => {
   const {
-    gpuSN, cpuSN,
+    gpuSN, cpuSN, hostname,
     projectName, po, gpuPN, boardSN, boardManufacturer, asicPN,
     siliconRev, boardRev, gpuRev,
     cpuPowerRating, heatsinkManufacturer,
@@ -51,9 +51,8 @@ router.post('/gpu-builds', async (req, res) => {
     return res.status(400).json({ error: 'gpu_sn is required' });
   }
 
-  const buildReference = (projectName && gpuSN)
-    ? `${projectName} - ${gpuSN.slice(-4)}`
-    : null;
+  // server_reference now stores the server reference (hostname) entered by the user
+  const buildReference = hostname || null;
 
   try {
     const pool = getGlobalPool();
@@ -65,7 +64,7 @@ router.post('/gpu-builds', async (req, res) => {
     await pool.promise().query(
       `INSERT INTO gpu_builds (
         gpu_sn, cpu_sn,
-        build_reference,
+        server_reference,
         project_name, po, gpu_pn, board_sn, board_manufacturer, asic_pn,
         silicon_rev, board_rev, gpu_rev,
         cpu_power_rating, heatsink_manufacturer,
@@ -82,7 +81,7 @@ router.post('/gpu-builds', async (req, res) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         cpu_sn               = VALUES(cpu_sn),
-        build_reference      = VALUES(build_reference),
+        server_reference      = VALUES(server_reference),
         project_name         = VALUES(project_name),
         po                   = VALUES(po),
         gpu_pn               = VALUES(gpu_pn),
@@ -159,7 +158,7 @@ router.post('/gpu-builds', async (req, res) => {
 router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
   const { originalGpuSN } = req.params;
   const {
-    gpuSN, cpuSN,
+    gpuSN, cpuSN, hostname,
     projectName, po, gpuPN, boardSN, boardManufacturer, asicPN,
     siliconRev, boardRev, gpuRev,
     cpuPowerRating, heatsinkManufacturer,
@@ -217,12 +216,12 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
       const fpyStatus = computeGpuFpy({ visualInspection, bootToOS, gpuDetected, fAuditEnablement, agfhcLvl3, roccRushTest, hbmTest, transferBench });
       const finalStatus = fpyStatus;
       const effectiveSN = gpuSN || originalGpuSN;
-      const buildRef = projectName ? `${projectName} - ${effectiveSN.slice(-4)}` : null;
+      const buildRef = hostname || null;
       const resolvedSt = status !== undefined ? status
         : await (async () => { const [r] = await pool.promise().query('SELECT status FROM gpu_builds WHERE gpu_sn = ?', [originalGpuSN]); return r[0]?.status || 'In Progress'; })();
       const [result] = await pool.promise().query(
         `UPDATE gpu_builds SET
-          gpu_sn = ?, build_reference = ?,
+          gpu_sn = ?, server_reference = ?,
           project_name = ?, po = ?, gpu_pn = ?, board_sn = ?, board_manufacturer = ?, asic_pn = ?,
           silicon_rev = ?, board_rev = ?, gpu_rev = ?,
           cpu_power_rating = ?, heatsink_manufacturer = ?,
@@ -266,9 +265,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
 
     // ── Normal update: non-testing fields only (testing columns + statuses untouched) ──
     const effectiveGpuSN = gpuSN || originalGpuSN;
-    const buildReference = projectName
-      ? `${projectName} - ${effectiveGpuSN.slice(-4)}`
-      : null;
+    const buildReference = hostname || null;
 
     const resolvedStatus = status !== undefined
       ? status
@@ -277,7 +274,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
     const [result] = await pool.promise().query(
       `UPDATE gpu_builds SET
         gpu_sn = ?,
-        build_reference = ?,
+        server_reference = ?,
         project_name = ?, po = ?, gpu_pn = ?, board_sn = ?, board_manufacturer = ?, asic_pn = ?,
         silicon_rev = ?, board_rev = ?, gpu_rev = ?,
         cpu_power_rating = ?, heatsink_manufacturer = ?,
@@ -335,6 +332,7 @@ router.get('/gpu-builds/search', async (req, res) => {
       return { ...build, photos };
     }));
 
+    if (results.length > 0) console.log('[gpu search] sample row keys:', Object.keys(results[0]), '| server_reference:', results[0].server_reference);
     res.json(results);
   } catch (err) {
     console.error('[gpu-builds/search] Error:', err.message);

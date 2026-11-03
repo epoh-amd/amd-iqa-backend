@@ -737,11 +737,16 @@ app.get('/api/dashboard/projects', (req, res) => {
   });
 });
 
-const generateBMCName = (platformType, chassisSN) => {
+const FALCONS_PNS = ['019FALCN06-F001', '019FALCN06-F002', '019FALCN06-F101', '019FALCN06-F201'];
+
+const generateBMCName = (platformType, chassisSN, systemPN = '') => {
   if (!platformType || !chassisSN) return '';
 
-  const platformName = extractManufacturerPrefix(platformType);
-  const lastFourDigits = chassisSN.slice(-4); // or .padStart(4, '0')
+  let platformName = extractManufacturerPrefix(platformType);
+  if (FALCONS_PNS.includes((systemPN || '').trim().toUpperCase())) {
+    platformName = 'Falcons';
+  }
+  const lastFourDigits = chassisSN.slice(-4);
 
   return `${platformName}-${lastFourDigits}`;
 };
@@ -834,7 +839,8 @@ app.put('/api/builds/bulk-update', async (req, res) => {
       const platformTypeChanged = row.platform_type !== undefined && row.platform_type !== currentPlatformType;
 
       if ((chassisSNChanged || platformTypeChanged) && effectivePlatformType) {
-        generatedBMC = generateBMCName(effectivePlatformType, effectiveChassisSN);
+        const effectiveSystemPN = row.system_pn !== undefined ? row.system_pn : '';
+        generatedBMC = generateBMCName(effectivePlatformType, effectiveChassisSN, effectiveSystemPN);
 
         const prefix = extractPrefixFromBMC(generatedBMC);
         const [mRows] = await conn.execute(

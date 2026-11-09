@@ -1008,37 +1008,29 @@ router.put('/',
  */
 router.get('/admin/users', apiAuth, requireRole(['cat4']), async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 50;
-    const offset = (page - 1) * limit;
     const search = req.query.search || '';
 
     // Get all users from database
     let allUsers = await getAllUsers();
-    
 
     // Apply search filter if provided
     if (search) {
       const searchLower = search.toLowerCase();
-      allUsers = allUsers.filter(user => 
+      allUsers = allUsers.filter(user =>
         user.full_name.toLowerCase().includes(searchLower) ||
         user.email.toLowerCase().includes(searchLower)
       );
     }
 
-    // Apply pagination
-    const total = allUsers.length;
-    const users = allUsers.slice(offset, offset + limit);
-
     res.json({
       success: true,
       data: {
-        users,
+        users: allUsers,
         pagination: {
-          page,
-          limit,
-          total,
-          pages: Math.ceil(total / limit)
+          page: 1,
+          limit: allUsers.length,
+          total: allUsers.length,
+          pages: 1
         }
       }
     });
@@ -1055,9 +1047,6 @@ router.get('/admin/users', apiAuth, requireRole(['cat4']), async (req, res) => {
  */
 router.get('/users', apiAuth, requireRole(['cat4']), async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 50;
-    const offset = (page - 1) * limit;
     const search = req.query.search || '';
 
     let whereClause = '';
@@ -1069,17 +1058,16 @@ router.get('/users', apiAuth, requireRole(['cat4']), async (req, res) => {
       queryParams = [searchTerm, searchTerm, searchTerm, searchTerm];
     }
 
-    // Get users with pagination
+    // Get all users without pagination
     const users = await executeQuery(
-      `SELECT 
+      `SELECT
         user_id, okta_user_id, email, full_name, first_name, last_name,
         department, location, employee_number, cost_center_number,
         role, status, created_at, updated_at, last_login
-      FROM users 
+      FROM users
       ${whereClause}
-      ORDER BY full_name ASC
-      LIMIT ? OFFSET ?`,
-      [...queryParams, limit, offset]
+      ORDER BY full_name ASC`,
+      queryParams
     );
 
     // Get total count
@@ -1095,10 +1083,10 @@ router.get('/users', apiAuth, requireRole(['cat4']), async (req, res) => {
       data: {
         users,
         pagination: {
-          page,
-          limit,
+          page: 1,
+          limit: total,
           total,
-          pages: Math.ceil(total / limit)
+          pages: 1
         }
       }
     });

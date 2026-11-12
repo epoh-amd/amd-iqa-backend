@@ -32,6 +32,7 @@ router.post('/gpu-builds', async (req, res) => {
   const {
     gpuSN, cpuSN, hostname,
     projectName, po, gpuPN, boardSN, boardManufacturer, asicPN,
+    eamPN, eamSN, pcbaSN,
     siliconRev, boardRev, gpuRev,
     cpuPowerRating, heatsinkManufacturer,
     heatsinkPN, heatsinkSN,
@@ -47,7 +48,7 @@ router.post('/gpu-builds', async (req, res) => {
     status, buildEngineer
   } = req.body;
 
-  if (!gpuSN) {
+  if (!gpuSN && projectName !== 'MI430x') {
     return res.status(400).json({ error: 'gpu_sn is required' });
   }
 
@@ -66,6 +67,7 @@ router.post('/gpu-builds', async (req, res) => {
         gpu_sn, cpu_sn,
         server_reference,
         project_name, po, gpu_pn, board_sn, board_manufacturer, asic_pn,
+        eam_pn, eam_sn, pcba_sn,
         silicon_rev, board_rev, gpu_rev,
         cpu_power_rating, heatsink_manufacturer,
         heatsink_pn, heatsink_sn,
@@ -78,7 +80,7 @@ router.post('/gpu-builds', async (req, res) => {
         hbm_test, hbm_test_notes,
         transfer_bench, transfer_bench_notes,
         ifwi_version, ifwi_build, rm_version, fpy_status, final_status, status, build_engineer
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         cpu_sn               = VALUES(cpu_sn),
         server_reference      = VALUES(server_reference),
@@ -88,6 +90,9 @@ router.post('/gpu-builds', async (req, res) => {
         board_sn             = VALUES(board_sn),
         board_manufacturer   = VALUES(board_manufacturer),
         asic_pn              = VALUES(asic_pn),
+        eam_pn               = VALUES(eam_pn),
+        eam_sn               = VALUES(eam_sn),
+        pcba_sn              = VALUES(pcba_sn),
         silicon_rev          = VALUES(silicon_rev),
         board_rev            = VALUES(board_rev),
         gpu_rev              = VALUES(gpu_rev),
@@ -121,9 +126,10 @@ router.post('/gpu-builds', async (req, res) => {
         build_engineer       = VALUES(build_engineer),
         updated_at           = CURRENT_TIMESTAMP`,
       [
-        gpuSN, cpuSN || null,
+        gpuSN || null, cpuSN || null,
         buildReference,
         projectName || null, po || null, gpuPN || null, boardSN || null, boardManufacturer || null, asicPN || null,
+        eamPN || null, eamSN || null, pcbaSN || null,
         siliconRev || null, boardRev || null, gpuRev || null,
         cpuPowerRating || null, heatsinkManufacturer || null,
         heatsinkPN || null, heatsinkSN || null,
@@ -160,6 +166,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
   const {
     gpuSN, cpuSN, hostname,
     projectName, po, gpuPN, boardSN, boardManufacturer, asicPN,
+    eamPN, eamSN, pcbaSN,
     siliconRev, boardRev, gpuRev,
     cpuPowerRating, heatsinkManufacturer,
     heatsinkPN, heatsinkSN,
@@ -171,8 +178,13 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
     roccRushTest, roccRushTestNotes,
     hbmTest, hbmTestNotes,
     transferBench, transferBenchNotes,
-    ifwiVersion, ifwiBuild, rmVersion, status, buildEngineer, testingOnly, updateStatuses
+    ifwiVersion, ifwiBuild, rmVersion, status, buildEngineer, testingOnly, updateStatuses,
+    lookupField: rawLookupField
   } = req.body;
+
+  // Whitelist the lookup column so it's safe to interpolate into SQL
+  const ALLOWED_LOOKUP = ['gpu_sn', 'eam_sn', 'pcba_sn'];
+  const whereCol = ALLOWED_LOOKUP.includes(rawLookupField) ? rawLookupField : 'gpu_sn';
 
   try {
     const pool = getGlobalPool();
@@ -193,7 +205,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
           transfer_bench = ?, transfer_bench_notes = ?,
           final_status = ?,
           updated_at = CURRENT_TIMESTAMP
-         WHERE gpu_sn = ?`,
+         WHERE ${whereCol} = ?`,
         [
           visualInspection || null, visualInspectionNotes || null,
           bootToOS || null, bootToOSNotes || null,
@@ -215,14 +227,15 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
     if (updateStatuses) {
       const fpyStatus = computeGpuFpy({ visualInspection, bootToOS, gpuDetected, fAuditEnablement, agfhcLvl3, roccRushTest, hbmTest, transferBench });
       const finalStatus = fpyStatus;
-      const effectiveSN = gpuSN || originalGpuSN;
+      const effectiveSN = gpuSN || (whereCol !== 'gpu_sn' ? null : originalGpuSN);
       const buildRef = hostname || null;
       const resolvedSt = status !== undefined ? status
-        : await (async () => { const [r] = await pool.promise().query('SELECT status FROM gpu_builds WHERE gpu_sn = ?', [originalGpuSN]); return r[0]?.status || 'In Progress'; })();
+        : await (async () => { const [r] = await pool.promise().query(`SELECT status FROM gpu_builds WHERE ${whereCol} = ?`, [originalGpuSN]); return r[0]?.status || 'In Progress'; })();
       const [result] = await pool.promise().query(
         `UPDATE gpu_builds SET
           gpu_sn = ?, server_reference = ?,
           project_name = ?, po = ?, gpu_pn = ?, board_sn = ?, board_manufacturer = ?, asic_pn = ?,
+          eam_pn = ?, eam_sn = ?, pcba_sn = ?,
           silicon_rev = ?, board_rev = ?, gpu_rev = ?,
           cpu_power_rating = ?, heatsink_manufacturer = ?,
           heatsink_pn = ?, heatsink_sn = ?,
@@ -238,10 +251,11 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
           fpy_status = ?, final_status = ?,
           status = ?, build_engineer = ?,
           updated_at = CURRENT_TIMESTAMP
-         WHERE gpu_sn = ?`,
+         WHERE ${whereCol} = ?`,
         [
           effectiveSN, buildRef,
           projectName || null, po || null, gpuPN || null, boardSN || null, boardManufacturer || null, asicPN || null,
+          eamPN || null, eamSN || null, pcbaSN || null,
           siliconRev || null, boardRev || null, gpuRev || null,
           cpuPowerRating || null, heatsinkManufacturer || null,
           heatsinkPN || null, heatsinkSN || null,
@@ -264,29 +278,31 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
     }
 
     // ── Normal update: non-testing fields only (testing columns + statuses untouched) ──
-    const effectiveGpuSN = gpuSN || originalGpuSN;
+    const effectiveGpuSN = gpuSN || (whereCol !== 'gpu_sn' ? null : originalGpuSN);
     const buildReference = hostname || null;
 
     const resolvedStatus = status !== undefined
       ? status
-      : await (async () => { const [r] = await pool.promise().query('SELECT status FROM gpu_builds WHERE gpu_sn = ?', [originalGpuSN]); return r[0]?.status || 'In Progress'; })();
+      : await (async () => { const [r] = await pool.promise().query(`SELECT status FROM gpu_builds WHERE ${whereCol} = ?`, [originalGpuSN]); return r[0]?.status || 'In Progress'; })();
 
     const [result] = await pool.promise().query(
       `UPDATE gpu_builds SET
         gpu_sn = ?,
         server_reference = ?,
         project_name = ?, po = ?, gpu_pn = ?, board_sn = ?, board_manufacturer = ?, asic_pn = ?,
+        eam_pn = ?, eam_sn = ?, pcba_sn = ?,
         silicon_rev = ?, board_rev = ?, gpu_rev = ?,
         cpu_power_rating = ?, heatsink_manufacturer = ?,
         heatsink_pn = ?, heatsink_sn = ?,
         ifwi_version = ?, ifwi_build = ?, rm_version = ?,
         status = ?, build_engineer = ?,
         updated_at = CURRENT_TIMESTAMP
-       WHERE gpu_sn = ?`,
+       WHERE ${whereCol} = ?`,
       [
         effectiveGpuSN,
         buildReference,
         projectName || null, po || null, gpuPN || null, boardSN || null, boardManufacturer || null, asicPN || null,
+        eamPN || null, eamSN || null, pcbaSN || null,
         siliconRev || null, boardRev || null, gpuRev || null,
         cpuPowerRating || null, heatsinkManufacturer || null,
         heatsinkPN || null, heatsinkSN || null,
@@ -309,9 +325,10 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
 router.get('/gpu-builds/search', async (req, res) => {
   let gpuSNs = req.query.gpuSN ? [].concat(req.query.gpuSN) : [];
   let cpuSNs = req.query.cpuSN ? [].concat(req.query.cpuSN) : [];
+  let eamSNs = req.query.eamSN ? [].concat(req.query.eamSN) : [];
 
-  if (gpuSNs.length === 0 && cpuSNs.length === 0) {
-    return res.status(400).json({ error: 'Provide at least one gpuSN or cpuSN' });
+  if (gpuSNs.length === 0 && cpuSNs.length === 0 && eamSNs.length === 0) {
+    return res.status(400).json({ error: 'Provide at least one gpuSN, cpuSN, or eamSN' });
   }
   try {
     const pool = getGlobalPool();
@@ -319,6 +336,7 @@ router.get('/gpu-builds/search', async (req, res) => {
     const params = [];
     gpuSNs.forEach(s => { conditions.push('gpu_sn LIKE ?'); params.push(`%${s}%`); });
     cpuSNs.forEach(s => { conditions.push('cpu_sn LIKE ?'); params.push(`%${s}%`); });
+    eamSNs.forEach(s => { conditions.push('eam_sn LIKE ?'); params.push(`%${s}%`); });
     const [rows] = await pool.promise().query(
       `SELECT * FROM gpu_builds WHERE ${conditions.join(' OR ')} ORDER BY created_at DESC`,
       params

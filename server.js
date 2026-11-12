@@ -2597,6 +2597,11 @@ SELECT
     b.bmc_version,
     b.scm_fpga_version,
     b.hpm_fpga_version,
+    b.cpld_version,
+    b.amc_sn,
+    b.pldm_version,
+    b.anc_test_status,
+    b.anc_test_notes,
     b.problem_description,
     b.bmc_mac,
     b.po,
@@ -2946,6 +2951,11 @@ app.get('/api/builds/:chassisSN/complete', (req, res) => {
     b.bmc_version,
     b.scm_fpga_version,
     b.hpm_fpga_version,
+    b.cpld_version,
+    b.amc_sn,
+    b.pldm_version,
+    b.anc_test_status,
+    b.anc_test_notes,
     b.problem_description,
     b.bmc_mac,
     b.po,
@@ -3096,6 +3106,11 @@ app.get('/api/builds/:chassisSN/complete/export', (req, res) => {
     b.bmc_version,
     b.scm_fpga_version,
     b.hpm_fpga_version,
+    b.cpld_version,
+    b.amc_sn,
+    b.pldm_version,
+    b.anc_test_status,
+    b.anc_test_notes,
     b.problem_description,
     b.bmc_mac,
     b.po,
@@ -3474,6 +3489,11 @@ app.post('/api/builds/search-for-edit', (req, res) => {
     b.bmc_version,
     b.scm_fpga_version,
     b.hpm_fpga_version,
+    b.cpld_version,
+    b.amc_sn,
+    b.pldm_version,
+    b.anc_test_status,
+    b.anc_test_notes,
     b.problem_description,
     b.bmc_mac,
 
@@ -3590,6 +3610,11 @@ app.post('/api/builds/search-for-edit-rma', (req, res) => {
     b.bmc_version,
     b.scm_fpga_version,
     b.hpm_fpga_version,
+    b.cpld_version,
+    b.amc_sn,
+    b.pldm_version,
+    b.anc_test_status,
+    b.anc_test_notes,
     b.problem_description,
     b.bmc_mac,
 
@@ -3796,6 +3821,26 @@ app.put('/api/builds/:chassisSN/edit', async (req, res) => {
       buildUpdateFields.push('hpm_fpga_version = ?');
       buildUpdateValues.push(updateData.hpmFpgaVersion);
     }
+    if (updateData.amcSN !== undefined) {
+      buildUpdateFields.push('amc_sn = ?');
+      buildUpdateValues.push(updateData.amcSN);
+    }
+    if (updateData.pldmVersion !== undefined) {
+      buildUpdateFields.push('pldm_version = ?');
+      buildUpdateValues.push(updateData.pldmVersion);
+    }
+    if (updateData.ancTestStatus !== undefined) {
+      buildUpdateFields.push('anc_test_status = ?');
+      buildUpdateValues.push(updateData.ancTestStatus);
+    }
+    if (updateData.ancTestNotes !== undefined) {
+      buildUpdateFields.push('anc_test_notes = ?');
+      buildUpdateValues.push(updateData.ancTestNotes);
+    }
+    if (updateData.cpldVersion !== undefined) {
+      buildUpdateFields.push('cpld_version = ?');
+      buildUpdateValues.push(updateData.cpldVersion);
+    }
 
     // Quality Details (editable) — writes to final_status; fpy_status is initial save only
     if (updateData.fpyStatus !== undefined) {
@@ -3846,7 +3891,7 @@ app.put('/api/builds/:chassisSN/edit', async (req, res) => {
     }
 
     // 3. Update Photos
-    const photoTypes = ['visual_inspection', 'boot', 'dimms_detected', 'lom_working'];
+    const photoTypes = ['visual_inspection', 'boot', 'dimms_detected', 'lom_working', 'anc_test'];
     for (const photoType of photoTypes) {
       const photoField = `${photoType}Photos`;
       if (updateData[photoField] && Array.isArray(updateData[photoField])) {
@@ -4179,13 +4224,16 @@ app.get('/api/part-numbers/search', (req, res) => {
  * @returns {object} - { hasDuplicates: boolean, duplicates: object }
  */
 app.post('/api/check-duplicates', (req, res) => {
-  const { chassisSN, mbSN, bmcMac, ethernetMac, cpuP0SN, cpuP1SN, m2SN, dimmSNs, isReworkMode } = req.body;
+  const { chassisSN, mbSN, bmcMac, ethernetMac, cpuP0SN, cpuP1SN, m2SN, dimmSNs, amcSN, eamSN, pcbaSN, isReworkMode } = req.body;
 
   const duplicates = {
     chassisSN: false,
     mbSN: false,
     bmcMac: false,
-    ethernetMac: false
+    ethernetMac: false,
+    amcSN: false,
+    eamSN: false,
+    pcbaSN: false
     // Removed: cpuP0SN, cpuP1SN, m2SN, dimmSNs - duplicates now allowed
   };
 
@@ -4258,6 +4306,36 @@ app.post('/api/check-duplicates', (req, res) => {
       }));
     }
 
+    if (amcSN) {
+      queries.push(new Promise((resolve) => {
+        db.query('SELECT amc_sn FROM builds WHERE amc_sn = ? AND chassis_sn != ?',
+          [amcSN, chassisSN], (err, results) => {
+            if (!err && results.length > 0) duplicates.amcSN = true;
+            resolve();
+          });
+      }));
+    }
+
+    if (eamSN) {
+      queries.push(new Promise((resolve) => {
+        db.query('SELECT eam_sn FROM master_builds WHERE eam_sn = ? AND chassis_sn != ?',
+          [eamSN, chassisSN], (err, results) => {
+            if (!err && results.length > 0) duplicates.eamSN = true;
+            resolve();
+          });
+      }));
+    }
+
+    if (pcbaSN) {
+      queries.push(new Promise((resolve) => {
+        db.query('SELECT pcba_sn FROM master_builds WHERE pcba_sn = ? AND chassis_sn != ?',
+          [pcbaSN, chassisSN], (err, results) => {
+            if (!err && results.length > 0) duplicates.pcbaSN = true;
+            resolve();
+          });
+      }));
+    }
+
     // Removed: cpuP0SN, cpuP1SN, m2SN, dimmSNs validation - duplicates now allowed
 
     Promise.all(queries).then(() => {
@@ -4308,6 +4386,33 @@ app.post('/api/check-duplicates', (req, res) => {
       queries.push(new Promise((resolve) => {
         db.query('SELECT ethernet_mac FROM builds WHERE ethernet_mac = ?', [ethernetMac], (err, results) => {
           if (!err && results.length > 0) duplicates.ethernetMac = true;
+          resolve();
+        });
+      }));
+    }
+
+    if (amcSN) {
+      queries.push(new Promise((resolve) => {
+        db.query('SELECT amc_sn FROM builds WHERE amc_sn = ?', [amcSN], (err, results) => {
+          if (!err && results.length > 0) duplicates.amcSN = true;
+          resolve();
+        });
+      }));
+    }
+
+    if (eamSN) {
+      queries.push(new Promise((resolve) => {
+        db.query('SELECT eam_sn FROM master_builds WHERE eam_sn = ?', [eamSN], (err, results) => {
+          if (!err && results.length > 0) duplicates.eamSN = true;
+          resolve();
+        });
+      }));
+    }
+
+    if (pcbaSN) {
+      queries.push(new Promise((resolve) => {
+        db.query('SELECT pcba_sn FROM master_builds WHERE pcba_sn = ?', [pcbaSN], (err, results) => {
+          if (!err && results.length > 0) duplicates.pcbaSN = true;
           resolve();
         });
       }));
@@ -4550,14 +4655,15 @@ app.post('/api/builds', async (req, res) => {
     const buildQuery = `
       INSERT INTO builds (
         chassis_sn, location, build_engineer, is_custom_config, project_name, system_pn, 
-        platform_type, manufacturer, chassis_type, bmc_name, bmc_mac, mb_sn, 
-        ethernet_mac, cpu_socket, cpu_vendor, jira_ticket_no, po, cpu_program_name, 
-        cpu_p0_sn, cpu_p0_socket_date_code, cpu_p1_sn, cpu_p1_socket_date_code, m2_pn, m2_sn, dimm_pn, dimm_qty, 
-        visual_inspection_status, visual_inspection_notes, boot_status, boot_notes, 
-        dimms_detected_status, dimms_detected_notes, lom_working_status, lom_working_notes, 
+        platform_type, manufacturer, chassis_type, bmc_name, bmc_mac, amc_sn, mb_sn,
+        ethernet_mac, cpu_socket, cpu_vendor, jira_ticket_no, po, cpu_program_name,
+        cpu_p0_sn, cpu_p0_socket_date_code, cpu_p1_sn, cpu_p1_socket_date_code, m2_pn, m2_sn, dimm_pn, dimm_qty,
+        visual_inspection_status, visual_inspection_notes, boot_status, boot_notes,
+        dimms_detected_status, dimms_detected_notes, lom_working_status, lom_working_notes,
         fpy_status, final_status, problem_description, can_continue, status, bios_version,
-        scm_fpga_version, hpm_fpga_version, bmc_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        scm_fpga_version, hpm_fpga_version, bmc_version,
+        pldm_version, anc_test_status, anc_test_notes, cpld_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         location = VALUES(location),
         build_engineer = VALUES(build_engineer),
@@ -4601,6 +4707,11 @@ app.post('/api/builds', async (req, res) => {
         scm_fpga_version = VALUES(scm_fpga_version),
         hpm_fpga_version = VALUES(hpm_fpga_version),
         bmc_version = VALUES(bmc_version),
+        amc_sn = VALUES(amc_sn),
+        pldm_version = VALUES(pldm_version),
+        anc_test_status = VALUES(anc_test_status),
+        anc_test_notes = VALUES(anc_test_notes),
+        cpld_version = VALUES(cpld_version),
         updated_at = CURRENT_TIMESTAMP
     `;
 
@@ -4617,7 +4728,8 @@ app.post('/api/builds', async (req, res) => {
       systemInfo.chassisType,                        // 9. chassis_type
       systemInfo.bmcName,                             // 10. bmc_name
       systemInfo.bmcMac,                             // 11. bmc_mac
-      systemInfo.mbSN,                               // 12. mb_sn
+      systemInfo.amcSN || null,                      // 12. amc_sn
+      systemInfo.mbSN,                               // 13. mb_sn
       systemInfo.ethernetMac || null,                // 13. ethernet_mac
       systemInfo.cpuSocket,                          // 14. cpu_socket
       systemInfo.cpuVendor || null,                  // 15. cpu_vendor
@@ -4649,7 +4761,11 @@ app.post('/api/builds', async (req, res) => {
       systemInfo.bkcDetails?.biosVersion || null,    // 36. bios_version
       systemInfo.bkcDetails?.scmFpgaVersion || null, // 37. scm_fpga_version
       systemInfo.bkcDetails?.hpmFpgaVersion || null, // 38. hpm_fpga_version
-      systemInfo.bkcDetails?.bmcVersion || null      // 39. bmc_version
+      systemInfo.bkcDetails?.bmcVersion || null,     // 39. bmc_version
+      systemInfo.bkcDetails?.pldmVersion || null,    // 40. pldm_version
+      systemInfo.ancTestStatus || null,              // 41. anc_test_status
+      systemInfo.ancTestNotes || null,               // 42. anc_test_notes
+      systemInfo.bkcDetails?.cpldVersion || null    // 43. cpld_version
     ];
 
     console.log(`Executing INSERT with ${buildValues.length} values for 41 columns`);
@@ -5954,15 +6070,15 @@ app.post('/api/extract-firmware-versions', async (req, res) => {
  */
 app.patch('/api/builds/:chassisSN/bkc', (req, res) => {
   const { chassisSN } = req.params;
-  const { biosVersion, scmFpgaVersion, hpmFpgaVersion, bmcVersion, cpuPinPhoto } = req.body;
+  const { biosVersion, scmFpgaVersion, hpmFpgaVersion, bmcVersion, pldmVersion, cpldVersion, cpuPinPhoto } = req.body;
 
   const query = `
     UPDATE builds
-    SET bios_version = ?, scm_fpga_version = ?, hpm_fpga_version = ?, bmc_version = ?
+    SET bios_version = ?, scm_fpga_version = ?, hpm_fpga_version = ?, bmc_version = ?, pldm_version = ?, cpld_version = ?
     WHERE chassis_sn = ?
   `;
 
-  db.query(query, [biosVersion, scmFpgaVersion, hpmFpgaVersion, bmcVersion, chassisSN], (err, results) => {
+  db.query(query, [biosVersion, scmFpgaVersion, hpmFpgaVersion, bmcVersion, pldmVersion || null, cpldVersion || null, chassisSN], (err, results) => {
     if (err) {
       console.error('Error updating BKC details:', err);
       return res.status(500).json({ error: 'Database error' });
@@ -6434,6 +6550,8 @@ app.patch('/api/builds/:chassisSN/rework', async (req, res) => {
         lom_working_status = ?,
         lom_working_notes = ?,
         final_status = ?,
+        anc_test_status = ?,
+        anc_test_notes = ?,
         problem_description = ?,
         status = CASE
           WHEN ? = 'Pass' THEN 'Complete'
@@ -6464,6 +6582,8 @@ app.patch('/api/builds/:chassisSN/rework', async (req, res) => {
       toDbValue(systemInfo.lomWorkingStatus),
       toDbValue(systemInfo.lomWorkingNotes),
       toDbValue(fpyStatus),
+      toDbValue(systemInfo.ancTestStatus),
+      toDbValue(systemInfo.ancTestNotes),
       toDbValue(systemInfo.problemDescription),
       toDbValue(fpyStatus), // For the CASE WHEN Pass
       toDbValue(fpyStatus), // For the CASE WHEN Fail
@@ -6511,7 +6631,8 @@ app.patch('/api/builds/:chassisSN/rework', async (req, res) => {
           'visualInspection': 'visual_inspection',
           'boot': 'boot',
           'dimmsDetected': 'dimms_detected',
-          'lomWorking': 'lom_working'
+          'lomWorking': 'lom_working',
+          'ancTest': 'anc_test'
         };
         return typeMap[type] || type;
       };
@@ -6699,6 +6820,11 @@ SELECT
   b.bmc_version,
   b.scm_fpga_version,
   b.hpm_fpga_version,
+  b.cpld_version,
+  b.amc_sn,
+  b.pldm_version,
+  b.anc_test_status,
+  b.anc_test_notes,
   b.problem_description,
   b.bmc_mac,
   b.po,

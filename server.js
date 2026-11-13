@@ -4584,12 +4584,15 @@ app.post('/api/builds', async (req, res) => {
     if (qualityDetails?.fpyStatus) {
       fpyStatus = qualityDetails.fpyStatus;
     } else if (systemInfo) {
-      fpyStatus = (
+      const baseTestsPassed = (
         systemInfo.visualInspection === 'Pass' &&
         systemInfo.bootStatus === 'Yes' &&
         systemInfo.dimmsDetectedStatus === 'Yes' &&
         systemInfo.lomWorkingStatus === 'Yes'
-      ) ? 'Pass' : 'Fail';
+      );
+      // If ANC test is provided (MI430x) it must also pass
+      const ancPassed = systemInfo.ancTestStatus ? systemInfo.ancTestStatus === 'Pass' : true;
+      fpyStatus = (baseTestsPassed && ancPassed) ? 'Pass' : 'Fail';
     }
 
     // CENTRALIZED STATUS MAPPING - consistent with frontend
@@ -6387,12 +6390,14 @@ app.patch('/api/builds/:chassisSN/rework', async (req, res) => {
   const { systemInfo, qualityDetails } = req.body;
 
   // Calculate FPY status at the beginning so it's available throughout
-  const fpyStatus = (
+  const baseTestsPassed = (
     systemInfo.visualInspection === 'Pass' &&
     systemInfo.bootStatus === 'Yes' &&
     systemInfo.dimmsDetectedStatus === 'Yes' &&
     systemInfo.lomWorkingStatus === 'Yes'
-  ) ? 'Pass' : 'Fail';
+  );
+  const ancPassed = systemInfo.ancTestStatus ? systemInfo.ancTestStatus === 'Pass' : true;
+  const fpyStatus = (baseTestsPassed && ancPassed) ? 'Pass' : 'Fail';
 
   let connection;
 

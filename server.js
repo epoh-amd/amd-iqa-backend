@@ -3891,9 +3891,14 @@ app.put('/api/builds/:chassisSN/edit', async (req, res) => {
     }
 
     // 3. Update Photos
-    const photoTypes = ['visual_inspection', 'boot', 'dimms_detected', 'lom_working', 'anc_test'];
-    for (const photoType of photoTypes) {
-      const photoField = `${photoType}Photos`;
+    const photoTypes = [
+      { dbType: 'visual_inspection', field: 'visualInspectionPhotos' },
+      { dbType: 'boot',              field: 'bootPhotos' },
+      { dbType: 'dimms_detected',    field: 'dimmsDetectedPhotos' },
+      { dbType: 'lom_working',       field: 'lomWorkingPhotos' },
+      { dbType: 'anc_test',          field: 'ancTestPhotos' }
+    ];
+    for (const { dbType: photoType, field: photoField } of photoTypes) {
       if (updateData[photoField] && Array.isArray(updateData[photoField])) {
         // Delete existing photos of this type
         await connection.execute(

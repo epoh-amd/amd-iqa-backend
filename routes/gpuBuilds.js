@@ -3,16 +3,19 @@ const router = express.Router();
 const { getGlobalPool } = require('../utils/database');
 
 // Compute GPU FPY from testing fields (mirrors frontend logic)
-const computeGpuFpy = ({ visualInspection, bootToOS, gpuDetected, fAuditEnablement, agfhcLvl3, roccRushTest, hbmTest, transferBench }) => {
-  const fields = [visualInspection, bootToOS, gpuDetected, fAuditEnablement, agfhcLvl3, roccRushTest, hbmTest, transferBench];
+const computeGpuFpy = ({ visualInspection, bootToOS, gpuDetected, fAuditEnablement, agfhcLvl3, roccRushTest, hbmTest, transferBench, ancTest }) => {
+  const fields = [visualInspection, bootToOS, gpuDetected, fAuditEnablement, agfhcLvl3, roccRushTest, hbmTest, transferBench, ancTest];
   if (fields.every(f => !f)) return null; // nothing filled yet
-  const failMap = { visualInspection: 'Fail', bootToOS: 'No', gpuDetected: 'No', fAuditEnablement: 'No', agfhcLvl3: 'Fail', roccRushTest: 'Fail', hbmTest: 'Fail', transferBench: 'Fail' };
-  const args = { visualInspection, bootToOS, gpuDetected, fAuditEnablement, agfhcLvl3, roccRushTest, hbmTest, transferBench };
+  const failMap = { visualInspection: 'Fail', bootToOS: 'No', gpuDetected: 'No', fAuditEnablement: 'No', agfhcLvl3: 'Fail', roccRushTest: 'Fail', hbmTest: 'Fail', transferBench: 'Fail', ancTest: 'Fail' };
+  const args = { visualInspection, bootToOS, gpuDetected, fAuditEnablement, agfhcLvl3, roccRushTest, hbmTest, transferBench, ancTest };
   const anyFail = Object.entries(failMap).some(([k, failVal]) => args[k] === failVal);
   return anyFail ? 'Fail' : 'Pass';
 };
 
 // Ensure fpy_status and final_status columns exist (idempotent)
+// NOTE: anc_test, anc_test_notes must be added manually:
+//   ALTER TABLE gpu_builds ADD COLUMN anc_test VARCHAR(10) NULL;
+//   ALTER TABLE gpu_builds ADD COLUMN anc_test_notes TEXT NULL;
 const ensureFpyColumns = async (pool) => {
   try {
     await pool.promise().query(`ALTER TABLE gpu_builds ADD COLUMN fpy_status VARCHAR(10) NULL AFTER rm_version`);
@@ -44,6 +47,7 @@ router.post('/gpu-builds', async (req, res) => {
     roccRushTest, roccRushTestNotes,
     hbmTest, hbmTestNotes,
     transferBench, transferBenchNotes,
+    ancTest, ancTestNotes,
     ifwiVersion, ifwiBuild, rmVersion,
     status, buildEngineer
   } = req.body;
@@ -59,7 +63,7 @@ router.post('/gpu-builds', async (req, res) => {
     const pool = getGlobalPool();
     await withFpyColumns(pool);
 
-    const fpyStatus = computeGpuFpy({ visualInspection, bootToOS, gpuDetected, fAuditEnablement, agfhcLvl3, roccRushTest, hbmTest, transferBench });
+    const fpyStatus = computeGpuFpy({ visualInspection, bootToOS, gpuDetected, fAuditEnablement, agfhcLvl3, roccRushTest, hbmTest, transferBench, ancTest });
     const finalStatus = fpyStatus;
 
     await pool.promise().query(
@@ -79,8 +83,9 @@ router.post('/gpu-builds', async (req, res) => {
         rocc_rush_test, rocc_rush_test_notes,
         hbm_test, hbm_test_notes,
         transfer_bench, transfer_bench_notes,
+        anc_test, anc_test_notes,
         ifwi_version, ifwi_build, rm_version, fpy_status, final_status, status, build_engineer
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         cpu_sn               = VALUES(cpu_sn),
         server_reference      = VALUES(server_reference),
@@ -117,6 +122,8 @@ router.post('/gpu-builds', async (req, res) => {
         hbm_test_notes          = VALUES(hbm_test_notes),
         transfer_bench          = VALUES(transfer_bench),
         transfer_bench_notes    = VALUES(transfer_bench_notes),
+        anc_test                = VALUES(anc_test),
+        anc_test_notes          = VALUES(anc_test_notes),
         ifwi_version         = VALUES(ifwi_version),
         ifwi_build           = VALUES(ifwi_build),
         rm_version           = VALUES(rm_version),
@@ -141,6 +148,7 @@ router.post('/gpu-builds', async (req, res) => {
         roccRushTest || null, roccRushTestNotes || null,
         hbmTest || null, hbmTestNotes || null,
         transferBench || null, transferBenchNotes || null,
+        ancTest || null, ancTestNotes || null,
         ifwiVersion || null, ifwiBuild || null, rmVersion || null,
         fpyStatus, finalStatus,
         status || 'In Progress', buildEngineer || null
@@ -178,6 +186,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
     roccRushTest, roccRushTestNotes,
     hbmTest, hbmTestNotes,
     transferBench, transferBenchNotes,
+    ancTest, ancTestNotes,
     ifwiVersion, ifwiBuild, rmVersion, status, buildEngineer, testingOnly, updateStatuses,
     lookupField: rawLookupField
   } = req.body;
@@ -192,7 +201,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
 
     if (testingOnly) {
       // ── Rework save: update testing fields + final_status only; fpy_status untouched ──
-      const finalStatus = computeGpuFpy({ visualInspection, bootToOS, gpuDetected, fAuditEnablement, agfhcLvl3, roccRushTest, hbmTest, transferBench });
+      const finalStatus = computeGpuFpy({ visualInspection, bootToOS, gpuDetected, fAuditEnablement, agfhcLvl3, roccRushTest, hbmTest, transferBench, ancTest });
       const [result] = await pool.promise().query(
         `UPDATE gpu_builds SET
           visual_inspection = ?, visual_inspection_notes = ?,
@@ -203,6 +212,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
           rocc_rush_test = ?, rocc_rush_test_notes = ?,
           hbm_test = ?, hbm_test_notes = ?,
           transfer_bench = ?, transfer_bench_notes = ?,
+          anc_test = ?, anc_test_notes = ?,
           final_status = ?,
           updated_at = CURRENT_TIMESTAMP
          WHERE ${whereCol} = ?`,
@@ -215,6 +225,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
           roccRushTest || null, roccRushTestNotes || null,
           hbmTest || null, hbmTestNotes || null,
           transferBench || null, transferBenchNotes || null,
+          ancTest || null, ancTestNotes || null,
           finalStatus,
           originalGpuSN
         ]
@@ -225,7 +236,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
 
     // ── Full save (Continue Build): all fields + fpy_status + final_status ──────
     if (updateStatuses) {
-      const fpyStatus = computeGpuFpy({ visualInspection, bootToOS, gpuDetected, fAuditEnablement, agfhcLvl3, roccRushTest, hbmTest, transferBench });
+      const fpyStatus = computeGpuFpy({ visualInspection, bootToOS, gpuDetected, fAuditEnablement, agfhcLvl3, roccRushTest, hbmTest, transferBench, ancTest });
       const finalStatus = fpyStatus;
       const effectiveSN = gpuSN || (whereCol !== 'gpu_sn' ? null : originalGpuSN);
       const buildRef = hostname || null;
@@ -247,6 +258,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
           rocc_rush_test = ?, rocc_rush_test_notes = ?,
           hbm_test = ?, hbm_test_notes = ?,
           transfer_bench = ?, transfer_bench_notes = ?,
+          anc_test = ?, anc_test_notes = ?,
           ifwi_version = ?, ifwi_build = ?, rm_version = ?,
           fpy_status = ?, final_status = ?,
           status = ?, build_engineer = ?,
@@ -267,6 +279,7 @@ router.patch('/gpu-builds/:originalGpuSN', async (req, res) => {
           roccRushTest || null, roccRushTestNotes || null,
           hbmTest || null, hbmTestNotes || null,
           transferBench || null, transferBenchNotes || null,
+          ancTest || null, ancTestNotes || null,
           ifwiVersion || null, ifwiBuild || null, rmVersion || null,
           fpyStatus, finalStatus,
           resolvedSt, buildEngineer || null,
@@ -345,7 +358,7 @@ router.get('/gpu-builds/search', async (req, res) => {
     // Attach photos to each result
     const results = await Promise.all(rows.map(async (build) => {
       const [photos] = await pool.promise().query(
-        'SELECT field_name, file_path FROM gpu_build_photos WHERE gpu_sn = ?', [build.gpu_sn]
+        'SELECT field_name, file_path FROM gpu_build_photos WHERE sn = ?', [build.gpu_sn]
       );
       return { ...build, photos };
     }));
@@ -382,7 +395,7 @@ router.get('/gpu-builds/:gpuSN', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Not found' });
 
     const [photos] = await pool.promise().query(
-      'SELECT field_name, file_path FROM gpu_build_photos WHERE gpu_sn = ?', [gpuSN]
+      'SELECT field_name, file_path FROM gpu_build_photos WHERE sn = ?', [gpuSN]
     );
 
     res.json({ ...rows[0], photos });
@@ -411,11 +424,11 @@ router.post('/gpu-builds/:gpuSN/photos', async (req, res) => {
   try {
     const pool = getGlobalPool();
     // Always delete existing photos first (handles removal case when photos is empty)
-    await pool.promise().query('DELETE FROM gpu_build_photos WHERE gpu_sn = ?', [gpuSN]);
+    await pool.promise().query('DELETE FROM gpu_build_photos WHERE sn = ?', [gpuSN]);
     if (photos && photos.length > 0) {
       const values = photos.map(p => [gpuSN, p.fieldName, p.filePath]);
       await pool.promise().query(
-        'INSERT INTO gpu_build_photos (gpu_sn, field_name, file_path) VALUES ?', [values]
+        'INSERT INTO gpu_build_photos (sn, field_name, file_path) VALUES ?', [values]
       );
     }
     res.json({ success: true });
@@ -431,7 +444,7 @@ router.get('/gpu-builds/:gpuSN/photos', async (req, res) => {
   try {
     const pool = getGlobalPool();
     const [rows] = await pool.promise().query(
-      'SELECT field_name, file_path FROM gpu_build_photos WHERE gpu_sn = ?', [gpuSN]
+      'SELECT field_name, file_path FROM gpu_build_photos WHERE sn = ?', [gpuSN]
     );
     res.json(rows);
   } catch (err) {

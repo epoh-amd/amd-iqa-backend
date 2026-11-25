@@ -2579,6 +2579,7 @@ SELECT
     b.m2_sn,
     b.dimm_pn,
     b.dimm_qty,
+    b.benic_mac_qty,
     b.visual_inspection_status,
     b.visual_inspection_notes,
     b.boot_status,
@@ -2600,8 +2601,6 @@ SELECT
     b.cpld_version,
     b.amc_sn,
     b.pldm_version,
-    b.anc_test_status,
-    b.anc_test_notes,
     b.problem_description,
     b.bmc_mac,
     b.po,
@@ -2609,24 +2608,28 @@ SELECT
     pn.project_name AS project_name,   -- readable name
 
     GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') AS dimm_sns,
+    GROUP_CONCAT(DISTINCT bma.benic_mac ORDER BY bma.id SEPARATOR ',') AS benic_macs,
 
-    CASE 
-        WHEN b.fpy_status IS NOT NULL THEN 1 ELSE 0 
+    CASE
+        WHEN b.fpy_status IS NOT NULL THEN 1 ELSE 0
     END AS has_quality_data,
 
-    CASE 
-        WHEN b.bios_version IS NOT NULL THEN 1 ELSE 0 
+    CASE
+        WHEN b.bios_version IS NOT NULL THEN 1 ELSE 0
     END AS has_bkc_data
 
 FROM builds b
 
-LEFT JOIN project_name pn 
+LEFT JOIN project_name pn
     ON b.project_name = pn.id
 
-LEFT JOIN dimm_serial_numbers d 
-    ON b.chassis_sn = d.chassis_sn
+LEFT JOIN dimm_serial_numbers d
+    ON b.chassis_sn COLLATE utf8mb4_general_ci = d.chassis_sn COLLATE utf8mb4_general_ci
 
-WHERE b.status = 'In Progress'
+LEFT JOIN benic_mac_addresses bma
+    ON b.chassis_sn COLLATE utf8mb4_general_ci = bma.chassis_sn COLLATE utf8mb4_general_ci
+
+WHERE b.status COLLATE utf8mb4_general_ci = 'In Progress'
 
 GROUP BY b.chassis_sn
 
@@ -2646,6 +2649,10 @@ ORDER BY b.updated_at DESC;
       // Parse DIMM SNs
       build.dimmSNs = build.dimm_sns ? build.dimm_sns.split(',') : [];
       delete build.dimm_sns;
+
+      // Parse BENIC MACs
+      build.benicMacs = build.benic_macs ? build.benic_macs.split(',') : [];
+      delete build.benic_macs;
 
       // Add Build Engineer and CPU Vendor to top-level for frontend compatibility
       // Map Build Engineer from all possible sources
@@ -2954,21 +2961,24 @@ app.get('/api/builds/:chassisSN/complete', (req, res) => {
     b.cpld_version,
     b.amc_sn,
     b.pldm_version,
-    b.anc_test_status,
-    b.anc_test_notes,
     b.problem_description,
     b.bmc_mac,
     b.po,
+    b.benic_mac_qty,
 
-    GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') AS dimm_sns
+    GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') AS dimm_sns,
+    GROUP_CONCAT(DISTINCT bma.benic_mac ORDER BY bma.id SEPARATOR ',') AS benic_macs
 
 FROM builds b
 
-LEFT JOIN project_name pn 
+LEFT JOIN project_name pn
     ON b.project_name = pn.id
 
-LEFT JOIN dimm_serial_numbers d 
-    ON b.chassis_sn = d.chassis_sn
+LEFT JOIN dimm_serial_numbers d
+    ON b.chassis_sn COLLATE utf8mb4_general_ci = d.chassis_sn COLLATE utf8mb4_general_ci
+
+LEFT JOIN benic_mac_addresses bma
+    ON b.chassis_sn COLLATE utf8mb4_general_ci = bma.chassis_sn COLLATE utf8mb4_general_ci
 
 WHERE b.chassis_sn = ?
 
@@ -2990,6 +3000,10 @@ GROUP BY b.chassis_sn;
     // Parse dimm serial numbers
     build.dimmSNs = build.dimm_sns ? build.dimm_sns.split(',') : [];
     delete build.dimm_sns;
+
+    // Parse benic mac addresses
+    build.benicMacs = build.benic_macs ? build.benic_macs.split(',') : [];
+    delete build.benic_macs;
 
     // Get failures
     const failureQuery = `
@@ -3109,8 +3123,6 @@ app.get('/api/builds/:chassisSN/complete/export', (req, res) => {
     b.cpld_version,
     b.amc_sn,
     b.pldm_version,
-    b.anc_test_status,
-    b.anc_test_notes,
     b.problem_description,
     b.bmc_mac,
     b.po,
@@ -3492,20 +3504,23 @@ app.post('/api/builds/search-for-edit', (req, res) => {
     b.cpld_version,
     b.amc_sn,
     b.pldm_version,
-    b.anc_test_status,
-    b.anc_test_notes,
     b.problem_description,
     b.bmc_mac,
+    b.benic_mac_qty,
 
-    GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') AS dimm_sns
+    GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') AS dimm_sns,
+    GROUP_CONCAT(DISTINCT bma.benic_mac ORDER BY bma.id SEPARATOR ',') AS benic_macs
 
 FROM builds b
 
-LEFT JOIN project_name pn 
+LEFT JOIN project_name pn
     ON b.project_name = pn.id
 
-LEFT JOIN dimm_serial_numbers d 
-    ON b.chassis_sn = d.chassis_sn
+LEFT JOIN dimm_serial_numbers d
+    ON b.chassis_sn COLLATE utf8mb4_general_ci = d.chassis_sn COLLATE utf8mb4_general_ci
+
+LEFT JOIN benic_mac_addresses bma
+    ON b.chassis_sn COLLATE utf8mb4_general_ci = bma.chassis_sn COLLATE utf8mb4_general_ci
 
 WHERE ${whereClause}
 
@@ -3526,6 +3541,8 @@ ORDER BY b.updated_at DESC;
     results.forEach(build => {
       build.dimmSNs = build.dimm_sns ? build.dimm_sns.split(',') : [];
       delete build.dimm_sns;
+      build.benicMacs = build.benic_macs ? build.benic_macs.split(',') : [];
+      delete build.benic_macs;
     });
 
     res.json(results);
@@ -3613,8 +3630,6 @@ app.post('/api/builds/search-for-edit-rma', (req, res) => {
     b.cpld_version,
     b.amc_sn,
     b.pldm_version,
-    b.anc_test_status,
-    b.anc_test_notes,
     b.problem_description,
     b.bmc_mac,
 
@@ -3769,6 +3784,10 @@ app.put('/api/builds/:chassisSN/edit', async (req, res) => {
       buildUpdateFields.push('dimm_qty = ?');
       buildUpdateValues.push(updateData.dimmQty === '' ? null : updateData.dimmQty);
     }
+    if (updateData.benicMacQty !== undefined) {
+      buildUpdateFields.push('benic_mac_qty = ?');
+      buildUpdateValues.push(updateData.benicMacQty === '' ? null : updateData.benicMacQty);
+    }
 
     // Testing (editable)
     if (updateData.visualInspection !== undefined) {
@@ -3829,14 +3848,6 @@ app.put('/api/builds/:chassisSN/edit', async (req, res) => {
       buildUpdateFields.push('pldm_version = ?');
       buildUpdateValues.push(updateData.pldmVersion);
     }
-    if (updateData.ancTestStatus !== undefined) {
-      buildUpdateFields.push('anc_test_status = ?');
-      buildUpdateValues.push(updateData.ancTestStatus);
-    }
-    if (updateData.ancTestNotes !== undefined) {
-      buildUpdateFields.push('anc_test_notes = ?');
-      buildUpdateValues.push(updateData.ancTestNotes);
-    }
     if (updateData.cpldVersion !== undefined) {
       buildUpdateFields.push('cpld_version = ?');
       buildUpdateValues.push(updateData.cpldVersion);
@@ -3878,15 +3889,21 @@ app.put('/api/builds/:chassisSN/edit', async (req, res) => {
 
     // 2. Update DIMM Serial Numbers
     if (updateData.dimmSNs && Array.isArray(updateData.dimmSNs)) {
-      // Delete existing DIMM SNs
       await connection.execute('DELETE FROM dimm_serial_numbers WHERE chassis_sn = ?', [chassisSN]);
-
-      // Insert new DIMM SNs
       if (updateData.dimmSNs.length > 0) {
         const dimmInsertValues = updateData.dimmSNs.filter(sn => sn && sn.trim() !== '').map(sn => [chassisSN, sn]);
         if (dimmInsertValues.length > 0) {
           await connection.query('INSERT INTO dimm_serial_numbers (chassis_sn, dimm_sn) VALUES ?', [dimmInsertValues]);
         }
+      }
+    }
+
+    // 2b. Update BENIC MAC Addresses
+    if (updateData.benicMacs && Array.isArray(updateData.benicMacs)) {
+      await connection.execute('DELETE FROM benic_mac_addresses WHERE chassis_sn = ?', [chassisSN]);
+      const benicInsertValues = updateData.benicMacs.filter(mac => mac && mac.trim() !== '').map(mac => [chassisSN, mac]);
+      if (benicInsertValues.length > 0) {
+        await connection.query('INSERT INTO benic_mac_addresses (chassis_sn, benic_mac) VALUES ?', [benicInsertValues]);
       }
     }
 
@@ -3896,7 +3913,6 @@ app.put('/api/builds/:chassisSN/edit', async (req, res) => {
       { dbType: 'boot',              field: 'bootPhotos' },
       { dbType: 'dimms_detected',    field: 'dimmsDetectedPhotos' },
       { dbType: 'lom_working',       field: 'lomWorkingPhotos' },
-      { dbType: 'anc_test',          field: 'ancTestPhotos' }
     ];
     for (const { dbType: photoType, field: photoField } of photoTypes) {
       if (updateData[photoField] && Array.isArray(updateData[photoField])) {
@@ -4577,9 +4593,18 @@ app.post('/api/builds', async (req, res) => {
     );
 
     if (duplicateCheckResult.hasDuplicates) {
+      const FIELD_LABELS = {
+        chassisSN: 'Chassis S/N',
+        mbSN: 'MB S/N',
+        bmcMac: 'BMC MAC',
+        ethernetMac: 'Ethernet MAC / BENIC MAC',
+        cpuP0SN: 'CPU P0 S/N',
+        cpuP1SN: 'CPU P1 S/N',
+        m2SN: 'M.2 S/N',
+      };
       const duplicateFields = Object.entries(duplicateCheckResult.duplicates)
         .filter(([_, isDuplicate]) => isDuplicate)
-        .map(([field, _]) => field);
+        .map(([field]) => FIELD_LABELS[field] || field);
 
       throw new Error(`Duplicate entries found: ${duplicateFields.join(', ')}. Please check these serial numbers and try again.`);
     }
@@ -4595,9 +4620,7 @@ app.post('/api/builds', async (req, res) => {
         systemInfo.dimmsDetectedStatus === 'Yes' &&
         systemInfo.lomWorkingStatus === 'Yes'
       );
-      // If ANC test is provided (MI430x) it must also pass
-      const ancPassed = systemInfo.ancTestStatus ? systemInfo.ancTestStatus === 'Pass' : true;
-      fpyStatus = (baseTestsPassed && ancPassed) ? 'Pass' : 'Fail';
+      fpyStatus = baseTestsPassed ? 'Pass' : 'Fail';
     }
 
     // CENTRALIZED STATUS MAPPING - consistent with frontend
@@ -4657,6 +4680,14 @@ app.post('/api/builds', async (req, res) => {
 
     const projectId = projectRows[0].id;
 
+    // For MI430x: auto-register system_pn in platform_info if it doesn't exist yet
+    if (systemInfo.projectName === 'MI430x' && systemInfo.systemPN) {
+      await connection.query(
+        `INSERT IGNORE INTO platform_info (system_pn, platform_type) VALUES (?, ?)`,
+        [systemInfo.systemPN, systemInfo.platformType || null]
+      );
+    }
+
     console.log("po:", systemInfo.po);
 
     // FIXED: Insert main build record with correct number of values
@@ -4665,13 +4696,13 @@ app.post('/api/builds', async (req, res) => {
         chassis_sn, location, build_engineer, is_custom_config, project_name, system_pn, 
         platform_type, manufacturer, chassis_type, bmc_name, bmc_mac, amc_sn, mb_sn,
         ethernet_mac, cpu_socket, cpu_vendor, jira_ticket_no, po, cpu_program_name,
-        cpu_p0_sn, cpu_p0_socket_date_code, cpu_p1_sn, cpu_p1_socket_date_code, m2_pn, m2_sn, dimm_pn, dimm_qty,
+        cpu_p0_sn, cpu_p0_socket_date_code, cpu_p1_sn, cpu_p1_socket_date_code, m2_pn, m2_sn, dimm_pn, dimm_qty, benic_mac_qty,
         visual_inspection_status, visual_inspection_notes, boot_status, boot_notes,
         dimms_detected_status, dimms_detected_notes, lom_working_status, lom_working_notes,
         fpy_status, final_status, problem_description, can_continue, status, bios_version,
         scm_fpga_version, hpm_fpga_version, bmc_version,
-        pldm_version, anc_test_status, anc_test_notes, cpld_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        pldm_version, cpld_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON DUPLICATE KEY UPDATE
         location = VALUES(location),
         build_engineer = VALUES(build_engineer),
@@ -4717,9 +4748,8 @@ app.post('/api/builds', async (req, res) => {
         bmc_version = VALUES(bmc_version),
         amc_sn = VALUES(amc_sn),
         pldm_version = VALUES(pldm_version),
-        anc_test_status = VALUES(anc_test_status),
-        anc_test_notes = VALUES(anc_test_notes),
         cpld_version = VALUES(cpld_version),
+        benic_mac_qty = VALUES(benic_mac_qty),
         updated_at = CURRENT_TIMESTAMP
     `;
 
@@ -4730,35 +4760,36 @@ app.post('/api/builds', async (req, res) => {
       resolvedBuildEngineer,                          // 3. build_engineer
       isCustomConfig ? 1 : 0,                        // 4. is_custom_config
       projectId,                        // 5. project_name
-      systemInfo.systemPN,                           // 6. system_pn
+      systemInfo.systemPN || null,                   // 6. system_pn (null-safe; MI430x auto-registered above)
       systemInfo.platformType,                       // 7. platform_type
       systemInfo.manufacturer,                       // 8. manufacturer
-      systemInfo.chassisType,                        // 9. chassis_type
-      systemInfo.bmcName,                             // 10. bmc_name
-      systemInfo.bmcMac,                             // 11. bmc_mac
+      systemInfo.chassisType || null,                // 9. chassis_type
+      systemInfo.bmcName || null,                    // 10. bmc_name
+      systemInfo.bmcMac || null,                     // 11. bmc_mac
       systemInfo.amcSN || null,                      // 12. amc_sn
-      systemInfo.mbSN,                               // 13. mb_sn
+      systemInfo.mbSN || null,                       // 13. mb_sn
       systemInfo.ethernetMac || null,                // 13. ethernet_mac
-      systemInfo.cpuSocket,                          // 14. cpu_socket
+      systemInfo.cpuSocket || null,                  // 14. cpu_socket
       systemInfo.cpuVendor || null,                  // 15. cpu_vendor
       systemInfo.jiraTicketNo || null,               // 16. jira_ticket_no
       systemInfo.po || null,
-      systemInfo.cpuProgramName,                     // 17. cpu_program_name
+      systemInfo.cpuProgramName || null,             // 17. cpu_program_name
       systemInfo.cpuP0SN || null,                    // 18. cpu_p0_sn
       systemInfo.cpuP0SocketDateCode || null,        // 19. cpu_p0_socket_date_code
       systemInfo.cpuP1SN || null,                    // 20. cpu_p1_sn
       systemInfo.cpuP1SocketDateCode || null,        // 21. cpu_p1_socket_date_code
-      systemInfo.m2PN,                               // 22. m2_pn
-      systemInfo.m2SN,                               // 21. m2_sn
-      systemInfo.dimmPN,                             // 22. dimm_pn
-      systemInfo.dimmQty,                            // 23. dimm_qty
-      systemInfo.visualInspection,                   // 24. visual_inspection_status
+      systemInfo.m2PN || null,                       // 22. m2_pn
+      systemInfo.m2SN || null,                       // 21. m2_sn
+      systemInfo.dimmPN || null,                     // 22. dimm_pn
+      systemInfo.dimmQty || null,                    // 23. dimm_qty
+      systemInfo.benicMacQty || null,                // 24. benic_mac_qty
+      systemInfo.visualInspection || null,           // 25. visual_inspection_status
       systemInfo.visualInspectionNotes || null,     // 25. visual_inspection_notes
-      systemInfo.bootStatus,                         // 26. boot_status
+      systemInfo.bootStatus || null,                 // 26. boot_status
       systemInfo.bootNotes || null,                  // 27. boot_notes
-      systemInfo.dimmsDetectedStatus,                // 28. dimms_detected_status
+      systemInfo.dimmsDetectedStatus || null,        // 28. dimms_detected_status
       systemInfo.dimmsDetectedNotes || null,         // 29. dimms_detected_notes
-      systemInfo.lomWorkingStatus,                   // 30. lom_working_status
+      systemInfo.lomWorkingStatus || null,           // 30. lom_working_status
       systemInfo.lomWorkingNotes || null,            // 31. lom_working_notes
       fpyStatus,                                      // 32. fpy_status
       fpyStatus,                                      // 33. final_status (same as fpy_status on initial save)
@@ -4771,12 +4802,10 @@ app.post('/api/builds', async (req, res) => {
       systemInfo.bkcDetails?.hpmFpgaVersion || null, // 38. hpm_fpga_version
       systemInfo.bkcDetails?.bmcVersion || null,     // 39. bmc_version
       systemInfo.bkcDetails?.pldmVersion || null,    // 40. pldm_version
-      systemInfo.ancTestStatus || null,              // 41. anc_test_status
-      systemInfo.ancTestNotes || null,               // 42. anc_test_notes
-      systemInfo.bkcDetails?.cpldVersion || null    // 43. cpld_version
+      systemInfo.bkcDetails?.cpldVersion || null    // 41. cpld_version
     ];
 
-    console.log(`Executing INSERT with ${buildValues.length} values for 41 columns`);
+    console.log(`Executing INSERT with ${buildValues.length} values`);
 
     const [buildResult] = await connection.execute(buildQuery, buildValues);
 
@@ -4790,15 +4819,26 @@ app.post('/api/builds', async (req, res) => {
 
     // Handle DIMM serial numbers
     if (systemInfo.dimmSNs && systemInfo.dimmSNs.length > 0) {
-      // First delete existing DIMMs for this chassis
       await connection.execute('DELETE FROM dimm_serial_numbers WHERE chassis_sn = ?', [systemInfo.chassisSN]);
-
-      // Insert new DIMMs
       const validDimmSNs = systemInfo.dimmSNs.filter(sn => sn && sn.trim() !== '');
       for (const dimmSN of validDimmSNs) {
         await connection.execute(
           'INSERT INTO dimm_serial_numbers (chassis_sn, dimm_sn) VALUES (?, ?)',
           [systemInfo.chassisSN, dimmSN]
+        );
+      }
+    }
+
+    // Handle BENIC MAC addresses
+    // SQL to run manually: ALTER TABLE builds ADD COLUMN benic_mac_qty INT NULL;
+    // CREATE TABLE benic_mac_addresses (id INT AUTO_INCREMENT PRIMARY KEY, chassis_sn VARCHAR(100) NOT NULL, benic_mac VARCHAR(50) NOT NULL, INDEX idx_chassis_sn (chassis_sn));
+    if (systemInfo.benicMacs && systemInfo.benicMacs.length > 0) {
+      await connection.execute('DELETE FROM benic_mac_addresses WHERE chassis_sn = ?', [systemInfo.chassisSN]);
+      const validBenicMacs = systemInfo.benicMacs.filter(mac => mac && mac.trim() !== '');
+      for (const benicMac of validBenicMacs) {
+        await connection.execute(
+          'INSERT INTO benic_mac_addresses (chassis_sn, benic_mac) VALUES (?, ?)',
+          [systemInfo.chassisSN, benicMac]
         );
       }
     }
@@ -5620,23 +5660,33 @@ app.get('/api/builds/:chassisSN', (req, res) => {
         return res.status(500).json({ error: 'Database error' });
       }
 
-      // Get photos
-      const photoQuery = 'SELECT * FROM build_photos WHERE chassis_sn = ?';
+      // Get BENIC MAC addresses
+      const benicMacQuery = 'SELECT benic_mac FROM benic_mac_addresses WHERE chassis_sn = ? ORDER BY id';
 
-      db.query(photoQuery, [chassisSN], (err, photoResults) => {
+      db.query(benicMacQuery, [chassisSN], (err, benicMacResults) => {
         if (err) {
-          console.error('Error fetching photos:', err);
+          console.error('Error fetching BENIC MACs:', err);
           return res.status(500).json({ error: 'Database error' });
         }
 
-        // Format response
-        const response = {
-          ...build,
-          dimmSNs: dimmResults.map(d => d.dimm_sn),
-          photos: photoResults
-        };
+        // Get photos
+        const photoQuery = 'SELECT * FROM build_photos WHERE chassis_sn = ?';
 
-        res.json(response);
+        db.query(photoQuery, [chassisSN], (err, photoResults) => {
+          if (err) {
+            console.error('Error fetching photos:', err);
+            return res.status(500).json({ error: 'Database error' });
+          }
+
+          const response = {
+            ...build,
+            dimmSNs: dimmResults.map(d => d.dimm_sn),
+            benicMacs: benicMacResults.map(r => r.benic_mac),
+            photos: photoResults
+          };
+
+          res.json(response);
+        });
       });
     });
   });
@@ -5956,11 +6006,13 @@ app.get('/api/builds/:chassisSN/complete', (req, res) => {
 
   // Get complete build details including quality data
   const buildQuery = `
-    SELECT b.*, 
+    SELECT b.*,
            GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') as dimm_sns,
+           GROUP_CONCAT(DISTINCT bma.benic_mac ORDER BY bma.id SEPARATOR ',') as benic_macs,
            GROUP_CONCAT(DISTINCT CONCAT(bf.failure_mode, ':', bf.failure_category) SEPARATOR ',') as failures
     FROM builds b
     LEFT JOIN dimm_serial_numbers d ON b.chassis_sn = d.chassis_sn
+    LEFT JOIN benic_mac_addresses bma ON b.chassis_sn = bma.chassis_sn
     LEFT JOIN build_failures bf ON b.chassis_sn = bf.chassis_sn
     WHERE b.chassis_sn = ?
     GROUP BY b.chassis_sn
@@ -5981,6 +6033,10 @@ app.get('/api/builds/:chassisSN/complete', (req, res) => {
     // Parse dimm serial numbers
     build.dimmSNs = build.dimm_sns ? build.dimm_sns.split(',') : [];
     delete build.dimm_sns;
+
+    // Parse BENIC MACs
+    build.benicMacs = build.benic_macs ? build.benic_macs.split(',') : [];
+    delete build.benic_macs;
 
     // Parse failures
     const failures = {
@@ -6401,8 +6457,7 @@ app.patch('/api/builds/:chassisSN/rework', async (req, res) => {
     systemInfo.dimmsDetectedStatus === 'Yes' &&
     systemInfo.lomWorkingStatus === 'Yes'
   );
-  const ancPassed = systemInfo.ancTestStatus ? systemInfo.ancTestStatus === 'Pass' : true;
-  const fpyStatus = (baseTestsPassed && ancPassed) ? 'Pass' : 'Fail';
+  const fpyStatus = baseTestsPassed ? 'Pass' : 'Fail';
 
   let connection;
 
@@ -6560,8 +6615,6 @@ app.patch('/api/builds/:chassisSN/rework', async (req, res) => {
         lom_working_status = ?,
         lom_working_notes = ?,
         final_status = ?,
-        anc_test_status = ?,
-        anc_test_notes = ?,
         problem_description = ?,
         status = CASE
           WHEN ? = 'Pass' THEN 'Complete'
@@ -6592,8 +6645,6 @@ app.patch('/api/builds/:chassisSN/rework', async (req, res) => {
       toDbValue(systemInfo.lomWorkingStatus),
       toDbValue(systemInfo.lomWorkingNotes),
       toDbValue(fpyStatus),
-      toDbValue(systemInfo.ancTestStatus),
-      toDbValue(systemInfo.ancTestNotes),
       toDbValue(systemInfo.problemDescription),
       toDbValue(fpyStatus), // For the CASE WHEN Pass
       toDbValue(fpyStatus), // For the CASE WHEN Fail
@@ -6602,19 +6653,30 @@ app.patch('/api/builds/:chassisSN/rework', async (req, res) => {
 
     await connection.execute(updateQuery, updateValues);
 
-    // Delete old DIMM SNs, build failures, and build photos
+    // Delete old DIMM SNs, BENIC MACs, build failures, and build photos
     await connection.execute('DELETE FROM dimm_serial_numbers WHERE chassis_sn = ?', [chassisSN]);
+    await connection.execute('DELETE FROM benic_mac_addresses WHERE chassis_sn = ?', [chassisSN]);
     await connection.execute('DELETE FROM build_failures WHERE chassis_sn = ?', [chassisSN]);
     await connection.execute('DELETE FROM build_photos WHERE chassis_sn = ?', [chassisSN]);
 
     // Insert new DIMM SNs
     if (systemInfo.dimmSNs && systemInfo.dimmSNs.length > 0) {
       const validDimmSNs = systemInfo.dimmSNs.filter(sn => sn && sn.trim() !== '');
-
       for (const dimmSN of validDimmSNs) {
         await connection.execute(
           'INSERT INTO dimm_serial_numbers (chassis_sn, dimm_sn) VALUES (?, ?)',
           [chassisSN, dimmSN]
+        );
+      }
+    }
+
+    // Insert BENIC MAC addresses
+    if (systemInfo.benicMacs && systemInfo.benicMacs.length > 0) {
+      const validBenicMacs = systemInfo.benicMacs.filter(mac => mac && mac.trim() !== '');
+      for (const benicMac of validBenicMacs) {
+        await connection.execute(
+          'INSERT INTO benic_mac_addresses (chassis_sn, benic_mac) VALUES (?, ?)',
+          [chassisSN, benicMac]
         );
       }
     }
@@ -6641,8 +6703,7 @@ app.patch('/api/builds/:chassisSN/rework', async (req, res) => {
           'visualInspection': 'visual_inspection',
           'boot': 'boot',
           'dimmsDetected': 'dimms_detected',
-          'lomWorking': 'lom_working',
-          'ancTest': 'anc_test'
+          'lomWorking': 'lom_working'
         };
         return typeMap[type] || type;
       };
@@ -6833,8 +6894,6 @@ SELECT
   b.cpld_version,
   b.amc_sn,
   b.pldm_version,
-  b.anc_test_status,
-  b.anc_test_notes,
   b.problem_description,
   b.bmc_mac,
   b.po,
@@ -7278,28 +7337,29 @@ app.post('/api/search-builds', (req, res) => {
   let query = `
     SELECT 
       b.*,
-      pn.project_name AS project_name,  
+      ANY_VALUE(pn.project_name) AS project_name,
       GROUP_CONCAT(DISTINCT d.dimm_sn ORDER BY d.id SEPARATOR ',') as dimm_sns,
-      mb.location as master_location,
-      mb.custom_location,
-      mb.team_security,
-      mb.department,
-      mb.build_name,
-      mb.changegear_asset_id,
-      mb.notes as master_notes,
-      mb.sms_order,
-      mb.cost_center,
-      mb.capitalization,
-      mb.delivery_date,
-      mb.master_status,
-      mb.cpu_pin_photo,
-      mb.cpu_pin_photo_uploaded_at,
-      r.pass_fail as rma_status,
+      GROUP_CONCAT(DISTINCT bma.benic_mac ORDER BY bma.id SEPARATOR ',') as benic_macs,
+      ANY_VALUE(mb.location) as master_location,
+      ANY_VALUE(mb.custom_location) as custom_location,
+      ANY_VALUE(mb.team_security) as team_security,
+      ANY_VALUE(mb.department) as department,
+      ANY_VALUE(mb.build_name) as build_name,
+      ANY_VALUE(mb.changegear_asset_id) as changegear_asset_id,
+      ANY_VALUE(mb.notes) as master_notes,
+      ANY_VALUE(mb.sms_order) as sms_order,
+      ANY_VALUE(mb.cost_center) as cost_center,
+      ANY_VALUE(mb.capitalization) as capitalization,
+      ANY_VALUE(mb.delivery_date) as delivery_date,
+      ANY_VALUE(mb.master_status) as master_status,
+      ANY_VALUE(mb.cpu_pin_photo) as cpu_pin_photo,
+      ANY_VALUE(mb.cpu_pin_photo_uploaded_at) as cpu_pin_photo_uploaded_at,
+      ANY_VALUE(r.pass_fail) as rma_status,
       -- Get problem_description from latest rework_history entry
       (
         SELECT rh_latest.problem_description
         FROM rework_history rh_latest
-        WHERE rh_latest.chassis_sn = b.chassis_sn
+        WHERE rh_latest.chassis_sn COLLATE utf8mb4_general_ci = b.chassis_sn COLLATE utf8mb4_general_ci
         ORDER BY rh_latest.rework_date DESC
         LIMIT 1
       ) as problem_description,
@@ -7310,11 +7370,12 @@ app.post('/api/search-builds', (req, res) => {
       END as has_rework,
       COUNT(DISTINCT rh.id) as rework_count
     FROM builds b
-    LEFT JOIN dimm_serial_numbers d ON b.chassis_sn = d.chassis_sn
-    LEFT JOIN master_builds mb ON b.chassis_sn = mb.chassis_sn
-    LEFT JOIN rework_history rh ON b.chassis_sn = rh.chassis_sn
+    LEFT JOIN dimm_serial_numbers d ON b.chassis_sn COLLATE utf8mb4_general_ci = d.chassis_sn COLLATE utf8mb4_general_ci
+    LEFT JOIN benic_mac_addresses bma ON b.chassis_sn COLLATE utf8mb4_general_ci = bma.chassis_sn COLLATE utf8mb4_general_ci
+    LEFT JOIN master_builds mb ON b.chassis_sn COLLATE utf8mb4_general_ci = mb.chassis_sn COLLATE utf8mb4_general_ci
+    LEFT JOIN rework_history rh ON b.chassis_sn COLLATE utf8mb4_general_ci = rh.chassis_sn COLLATE utf8mb4_general_ci
     LEFT JOIN project_name pn ON b.project_name = pn.id
-    LEFT JOIN rma r ON b.chassis_sn = r.chassis_sn
+    LEFT JOIN rma r ON b.chassis_sn COLLATE utf8mb4_general_ci = r.chassis_sn COLLATE utf8mb4_general_ci
     WHERE 1=1
   `;
 
@@ -7672,6 +7733,12 @@ app.post('/api/search-builds', (req, res) => {
           row.dimmSNs = [];
         }
         delete row.dimm_sns;
+        if (row.benic_macs) {
+          row.benicMacs = row.benic_macs.split(',').map(mac => mac.trim()).filter(Boolean);
+        } else {
+          row.benicMacs = [];
+        }
+        delete row.benic_macs;
         row.has_rework = row.has_rework || 'No';
         row.rework_count = row.rework_count || 0;
         const f = failureMap[row.chassis_sn];
